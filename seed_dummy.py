@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from collections import defaultdict
+from itertools import count
 import re
 
 from app.core.security import get_password_hash
@@ -15,6 +16,7 @@ from app.services.order import create_outgoing_order, InsufficientStockError, up
 
 
 DEFAULT_PASSWORD = "password"
+TOPUP_COUNTER = count(1)
 
 def slugify(value):
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower())
@@ -364,6 +366,43 @@ def backfill_order_items(db, sku_meta_by_id):
     return updated_prices, added_taxes
 
 
+def ensure_stock_for_items(db, warehouse_id, items, sku_brand_map, today):
+    incoming_by_brand = defaultdict(list)
+    for item in items:
+        required = item.quantity or 0
+        if required <= 0:
+            continue
+        inventory = db.query(Inventory).filter(
+            Inventory.sku_id == item.sku_id,
+            Inventory.warehouse_id == warehouse_id
+        ).first()
+        current_qty = inventory.total_quantity if inventory else 0
+        if current_qty >= required:
+            continue
+        brand_id = sku_brand_map.get(item.sku_id)
+        if not brand_id:
+            continue
+        top_up_qty = max(required * 8, 200)
+        incoming_by_brand[brand_id].append(
+            IncomingOrderItem(
+                sku_id=item.sku_id,
+                quantity=top_up_qty,
+                batch_number=f"TOPUP-{warehouse_id}-{item.sku_id}-{next(TOPUP_COUNTER)}",
+                mfg_date=(today - timedelta(days=30)).isoformat(),
+                expiry_date=(today + timedelta(days=300)).isoformat(),
+            )
+        )
+
+    added_batches = 0
+    for brand_id, batch_items in incoming_by_brand.items():
+        create_incoming_order(
+            db,
+            IncomingOrderCreate(brand_id=brand_id, warehouse_id=warehouse_id, items=batch_items)
+        )
+        added_batches += len(batch_items)
+    return added_batches
+
+
 def main():
     db = SessionLocal()
 
@@ -480,8 +519,10 @@ def main():
         sku = sku_by_code.get(meta["code"])
         if sku:
             sku_meta_by_id[sku.id] = meta
+    sku_brand_map = {sku.id: sku.brand_id for sku in sku_by_code.values()}
 
     created_orders = 0
+    topup_batches = 0
     for idx, order_data in enumerate(ORDERS):
         if db.query(Order).filter(Order.invoice_number == order_data["invoice"]).first():
             continue
@@ -534,6 +575,7 @@ def main():
             continue
 
         warehouse_id = order_data.get("warehouse_id") or salesman.warehouse_id or wh_main.id
+        topup_batches += ensure_stock_for_items(db, warehouse_id, items, sku_brand_map, today)
         order_payload = OrderCreate(retailer_id=retailer.id, warehouse_id=warehouse_id, items=items)
         try:
             order = create_outgoing_order(db, order_payload, salesman_user)
@@ -606,6 +648,7 @@ def main():
         if not items:
             continue
 
+        topup_batches += ensure_stock_for_items(db, warehouse.id, items, sku_brand_map, today)
         order_payload = OrderCreate(retailer_id=retailer.id, warehouse_id=warehouse.id, items=items)
         try:
             order = create_outgoing_order(db, order_payload, salesman_user)
@@ -678,7 +721,7 @@ def main():
     print(
         f"Warehouses: {len(warehouses)} | Retailers: {len(RETAILERS)} | "
         f"SKUs: {len(SKUS)} | Orders: {created_orders} | Generated: {generated_orders} | "
-        f"Credit notes: {credit_note_count} | Item prices updated: {updated_prices} | "
+        f"Credit notes: {credit_note_count} | Top-ups: {topup_batches} | Item prices updated: {updated_prices} | "
         f"Taxes added: {added_taxes}"
     )
     print("Users (password: password):")
