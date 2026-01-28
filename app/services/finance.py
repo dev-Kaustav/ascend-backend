@@ -56,6 +56,9 @@ def calculate_credit_note_totals(credit_note: CreditNote) -> dict:
 def calculate_order_outstanding(order: Order) -> float:
     order_totals = calculate_order_totals(order)
     payments_total = sum(payment.amount for payment in order.payments)
-    credit_total = sum(calculate_credit_note_totals(credit_note)["grand_total"] for credit_note in order.credit_notes)
+    credit_total = 0
+    for credit_note in order.credit_notes:
+        if getattr(credit_note, "applies_to_outstanding", True):
+            credit_total += calculate_credit_note_totals(credit_note)["grand_total"]
     outstanding = order_totals["grand_total"] - payments_total - credit_total
     return max(outstanding, 0)

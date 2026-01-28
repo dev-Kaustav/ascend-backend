@@ -47,9 +47,9 @@ curl -X POST http://localhost:8000/admin/brands \
   -d '{"name":"Brand A","contact_info":"brand@example.com"}'
 ```
 
-Create incoming order:
+Add inventory:
 ```bash
-curl -X POST http://localhost:8000/admin/incoming-orders \
+curl -X POST http://localhost:8000/admin/inventory \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -59,7 +59,6 @@ curl -X POST http://localhost:8000/admin/incoming-orders \
       {
         "sku_id": 1,
         "quantity": 10,
-        "batch_number": "BATCH-1",
         "mfg_date": "2024-01-01",
         "expiry_date": "2025-01-01"
       }

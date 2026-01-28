@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Account, CreditNote, CreditNoteItem, InventoryTransaction, Inventory, Order
@@ -104,8 +106,61 @@ def get_credit_note_view(db: Session, credit_note_id: int):
     totals = calculate_credit_note_totals(credit_note)
     return {"credit_note": credit_note, **totals}
 
-def list_payments(db: Session):
-    return db.query(Account).order_by(Account.created_at.desc()).all()
+def list_payments(db: Session, limit: int = 50, offset: int = 0):
+    query = db.query(Account)
+    total = query.count()
+    items = (
+        query.order_by(Account.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+    total_amount = db.query(func.coalesce(func.sum(Account.amount), 0)).scalar() or 0
 
-def list_credit_notes(db: Session):
-    return db.query(CreditNote).order_by(CreditNote.created_at.desc()).all()
+    since = datetime.utcnow() - timedelta(days=30)
+    daily_rows = (
+        db.query(func.date(Account.created_at), func.sum(Account.amount))
+        .filter(Account.created_at >= since)
+        .group_by(func.date(Account.created_at))
+        .order_by(func.date(Account.created_at))
+        .all()
+    )
+    daily_totals = [
+        {"date": day.isoformat(), "amount": float(amount or 0)}
+        for day, amount in daily_rows
+        if day
+    ]
+    return items, total, float(total_amount), daily_totals
+
+def list_credit_notes(db: Session, limit: int = 50, offset: int = 0):
+    total = db.query(func.count(CreditNote.id)).scalar() or 0
+
+    amount_sub = (
+        db.query(
+            CreditNoteItem.credit_note_id.label("credit_note_id"),
+            func.sum(CreditNoteItem.quantity * CreditNoteItem.unit_price).label("amount"),
+        )
+        .group_by(CreditNoteItem.credit_note_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(CreditNote, amount_sub.c.amount)
+        .outerjoin(amount_sub, amount_sub.c.credit_note_id == CreditNote.id)
+        .order_by(CreditNote.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    items = []
+    for credit_note, amount in rows:
+        setattr(credit_note, "amount", float(amount or 0))
+        items.append(credit_note)
+
+    total_amount = (
+        db.query(func.coalesce(func.sum(CreditNoteItem.quantity * CreditNoteItem.unit_price), 0))
+        .scalar()
+        or 0
+    )
+    return items, total, float(total_amount)

@@ -1,6 +1,6 @@
 from app.core.security import create_access_token, get_password_hash
 from app.models import User, Order
-from app.models.enums import EmployeeRole, OrderType, OrderStatus
+from app.models.enums import EmployeeRole, OrderStatus
 
 
 def _auth_header_for(db, role: EmployeeRole) -> dict:
@@ -39,7 +39,6 @@ def test_accountant_access(client, db):
     salesman_headers = _auth_header_for(db, EmployeeRole.SALESMAN)
 
     order = Order(
-        order_type=OrderType.OUTGOING,
         from_entity_type="WAREHOUSE",
         from_entity_id=1,
         to_entity_type="RETAILER",

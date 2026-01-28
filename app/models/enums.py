@@ -5,17 +5,16 @@ class EmployeeRole(str, Enum):
     SALESMAN = "SALESMAN"
     ACCOUNTANT = "ACCOUNTANT"
     WAREHOUSE_MANAGER = "WAREHOUSE_MANAGER"
+    DRIVER = "DRIVER"
     RETAILER = "RETAILER"
     BRAND = "BRAND"
 
-class OrderType(str, Enum):
-    INCOMING = "INCOMING"
-    OUTGOING = "OUTGOING"
-
 class OrderStatus(str, Enum):
     PENDING = "PENDING"
+    OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY"
     CONFIRMED = "CONFIRMED"
     DELIVERED = "DELIVERED"
+    RETURNED = "RETURNED"
     CANCELLED = "CANCELLED"
 
 class TransactionType(str, Enum):

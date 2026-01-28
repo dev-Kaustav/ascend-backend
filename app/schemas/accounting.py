@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from datetime import datetime
 
@@ -13,6 +13,16 @@ class PaymentResponse(BaseModel):
     amount: float
     transaction_reference: str
     created_at: Optional[datetime] = None
+
+class PaymentDailyTotal(BaseModel):
+    date: str
+    amount: float
+
+class PaymentPage(BaseModel):
+    items: list[PaymentResponse]
+    total: int
+    total_amount: Optional[float] = None
+    daily_totals: list[PaymentDailyTotal] = Field(default_factory=list)
 
 class CreditNoteItemCreate(BaseModel):
     sku_id: int
@@ -38,6 +48,19 @@ class CreditNoteResponse(BaseModel):
     credit_note_number: str
     items: list[CreditNoteItemResponse]
     created_at: Optional[datetime] = None
+
+class CreditNoteListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    order_id: int
+    credit_note_number: str
+    created_at: Optional[datetime] = None
+    amount: Optional[float] = None
+
+class CreditNotePage(BaseModel):
+    items: list[CreditNoteListResponse]
+    total: int
+    total_amount: Optional[float] = None
 
 class CreditNoteView(BaseModel):
     model_config = ConfigDict(from_attributes=True)

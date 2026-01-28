@@ -1,7 +1,7 @@
 import pytest
 
 from app.models import Order, OrderItem, OrderItemTax, Account, Brand, SKU
-from app.models.enums import OrderType, OrderStatus
+from app.models.enums import OrderStatus
 from app.schemas.accounting import PaymentCreate, CreditNoteCreate, CreditNoteItemCreate
 from app.services.accounting import create_payment, create_credit_note
 
@@ -14,7 +14,6 @@ def _create_order_with_item(db, quantity=1):
     db.add(sku)
     db.flush()
     order = Order(
-        order_type=OrderType.OUTGOING,
         from_entity_type="WAREHOUSE",
         from_entity_id=1,
         to_entity_type="RETAILER",

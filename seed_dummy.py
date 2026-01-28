@@ -1,22 +1,24 @@
+"""
+Manual demo-data generator. Run explicitly when you need populated dashboards; not executed on start.
+"""
+
 from datetime import date, datetime, timedelta
 from collections import defaultdict
-from itertools import count
 import re
 
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
 from app.models import Brand, Warehouse, Employee, Retailer, SKU, User, Order, SKUBatch, Inventory, OrderItem, OrderItemTax
-from app.models.enums import EmployeeRole, OrderType, OrderStatus
+from app.models.enums import EmployeeRole, OrderStatus
 from app.schemas.accounting import CreditNoteCreate, CreditNoteItemCreate, PaymentCreate
-from app.schemas.admin import IncomingOrderCreate, IncomingOrderItem
+from app.schemas.admin import InventoryReceiptCreate, InventoryReceiptItem
 from app.schemas.order import OrderCreate, OrderItemCreate, OrderItemTaxCreate, StatusUpdate
 from app.services.accounting import create_credit_note, create_payment
-from app.services.admin import create_incoming_order
+from app.services.admin import add_inventory_receipt
 from app.services.order import create_outgoing_order, InsufficientStockError, update_order_status
 
 
 DEFAULT_PASSWORD = "password"
-TOPUP_COUNTER = count(1)
 
 def slugify(value):
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower())
@@ -384,10 +386,9 @@ def ensure_stock_for_items(db, warehouse_id, items, sku_brand_map, today):
             continue
         top_up_qty = max(required * 8, 200)
         incoming_by_brand[brand_id].append(
-            IncomingOrderItem(
+            InventoryReceiptItem(
                 sku_id=item.sku_id,
                 quantity=top_up_qty,
-                batch_number=f"TOPUP-{warehouse_id}-{item.sku_id}-{next(TOPUP_COUNTER)}",
                 mfg_date=(today - timedelta(days=30)).isoformat(),
                 expiry_date=(today + timedelta(days=300)).isoformat(),
             )
@@ -395,9 +396,9 @@ def ensure_stock_for_items(db, warehouse_id, items, sku_brand_map, today):
 
     added_batches = 0
     for brand_id, batch_items in incoming_by_brand.items():
-        create_incoming_order(
+        add_inventory_receipt(
             db,
-            IncomingOrderCreate(brand_id=brand_id, warehouse_id=warehouse_id, items=batch_items)
+            InventoryReceiptCreate(brand_id=brand_id, warehouse_id=warehouse_id, items=batch_items)
         )
         added_batches += len(batch_items)
     return added_batches
@@ -458,8 +459,6 @@ def main():
             SKU,
             name=item["title"],
             brand_id=brand.id,
-            description=f"SKU: {item['code']}",
-            unit=item["unit"],
         )
         sku_by_code[item["code"]] = sku
 
@@ -485,23 +484,20 @@ def main():
         incoming_items_by_brand = defaultdict(list)
         qty_primary = 600 if idx == 0 else 350
         qty_secondary = 360 if idx == 0 else 210
-        batch_suffix = slugify(warehouse.name)
         for code, sku in sku_by_code.items():
             if (sku.id, warehouse.id) in existing_inventory_keys:
                 continue
             incoming_items_by_brand[sku.brand_id].extend(
                 [
-                    IncomingOrderItem(
+                    InventoryReceiptItem(
                         sku_id=sku.id,
                         quantity=qty_primary,
-                        batch_number=f"{code}-{batch_suffix}-B1",
                         mfg_date=(today - timedelta(days=45)).isoformat(),
                         expiry_date=(today + timedelta(days=240)).isoformat(),
                     ),
-                    IncomingOrderItem(
+                    InventoryReceiptItem(
                         sku_id=sku.id,
                         quantity=qty_secondary,
-                        batch_number=f"{code}-{batch_suffix}-B2",
                         mfg_date=(today - timedelta(days=20)).isoformat(),
                         expiry_date=(today + timedelta(days=360)).isoformat(),
                     ),
@@ -509,9 +505,9 @@ def main():
             )
 
     for brand_id, items in incoming_items_by_brand.items():
-        create_incoming_order(
+        add_inventory_receipt(
             db,
-            IncomingOrderCreate(brand_id=brand_id, warehouse_id=warehouse.id, items=items)
+            InventoryReceiptCreate(brand_id=brand_id, warehouse_id=warehouse.id, items=items)
         )
 
     sku_meta_by_id = {}
@@ -551,8 +547,6 @@ def main():
                     SKU,
                     name=item["sku_code"],
                     brand_id=brand.id,
-                    description=f"SKU: {item['sku_code']}",
-                    unit="unit",
                 )
                 sku_by_code[item["sku_code"]] = sku
             taxes = []

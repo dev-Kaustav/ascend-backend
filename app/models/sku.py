@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey, Float, Date
 
 from app.db.base import Base
 
@@ -8,5 +8,19 @@ class SKU(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=False)
-    description = Column(Text)
-    unit = Column(String)
+    hsn_code = Column(String)
+    pack_quantity = Column(Float)
+    expiry_date = Column(Date)
+    mrp = Column(Float)
+    discount_amount = Column(Float, default=0)
+    discount_percent = Column(Float, default=0)
+    rate = Column(Float)
+    sgst_percent = Column(Float)
+    sgst_amount = Column(Float)
+    cgst_percent = Column(Float)
+    cgst_amount = Column(Float)
+    amount = Column(Float)
+    weight = Column(Float)
+    length_cm = Column(Float)
+    width_cm = Column(Float)
+    height_cm = Column(Float)

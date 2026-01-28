@@ -3,8 +3,9 @@ from app.core.security import verify_password, create_access_token, create_refre
 from app.models import User
 
 def authenticate_user(db: Session, email: str, password: str):
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.password_hash):
+    normalized_email = email.strip().lower()
+    user = db.query(User).filter(User.email == normalized_email).first()
+    if not user or not user.is_active or not verify_password(password, user.password_hash):
         return None
     return user
 

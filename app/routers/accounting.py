@@ -1,8 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.accounting import create_payment, create_credit_note, get_credit_note_view, list_payments, list_credit_notes
-from app.schemas.accounting import PaymentCreate, PaymentResponse, CreditNoteCreate, CreditNoteResponse, CreditNoteView
+from app.schemas.accounting import (
+    PaymentCreate,
+    PaymentResponse,
+    PaymentPage,
+    CreditNoteCreate,
+    CreditNoteResponse,
+    CreditNotePage,
+    CreditNoteView,
+)
 from app.core.deps import require_accountant
 
 router = APIRouter()
@@ -22,13 +30,30 @@ def create_credit_note_endpoint(credit_note: CreditNoteCreate, db: Session = Dep
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/payments", response_model=list[PaymentResponse])
-def list_payments_endpoint(db: Session = Depends(get_db), current_user = Depends(require_accountant)):
-    return list_payments(db)
+@router.get("/payments", response_model=PaymentPage)
+def list_payments_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_accountant),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    items, total, total_amount, daily_totals = list_payments(db, limit=limit, offset=offset)
+    return {
+        "items": items,
+        "total": total,
+        "total_amount": total_amount,
+        "daily_totals": daily_totals,
+    }
 
-@router.get("/credit-notes", response_model=list[CreditNoteResponse])
-def list_credit_notes_endpoint(db: Session = Depends(get_db), current_user = Depends(require_accountant)):
-    return list_credit_notes(db)
+@router.get("/credit-notes", response_model=CreditNotePage)
+def list_credit_notes_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_accountant),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    items, total, total_amount = list_credit_notes(db, limit=limit, offset=offset)
+    return {"items": items, "total": total, "total_amount": total_amount}
 
 @public_router.get("/credit-notes/{credit_note_id}/view", response_model=CreditNoteView)
 def get_credit_note_view_endpoint(credit_note_id: int, db: Session = Depends(get_db), current_user = Depends(require_accountant)):

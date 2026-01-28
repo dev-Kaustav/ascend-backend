@@ -3,22 +3,32 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.order import create_outgoing_order, update_order_status, get_order_invoice_view, InsufficientStockError, RetailerAccessError
 from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceView
-from app.core.deps import require_admin, require_salesman, require_accountant, get_role_value
+from app.core.deps import require_accountant, require_roles, get_role_value
 from app.models import User, Order, Retailer
 
 router = APIRouter()
 
 @router.post("", response_model=OrderResponse)
-def create_order(order: OrderCreate, db: Session = Depends(get_db), current_user: User = Depends(require_salesman)):
+def create_order(
+    order: OrderCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("ADMIN", "SALESMAN", "ACCOUNTANT")),
+):
     try:
         return create_outgoing_order(db, order, current_user)
     except InsufficientStockError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except RetailerAccessError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/{order_id}", response_model=OrderResponse)
-def get_order(order_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_salesman)):
+def get_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("SALESMAN", "ACCOUNTANT", "WAREHOUSE_MANAGER")),
+):
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -29,9 +39,16 @@ def get_order(order_id: int, db: Session = Depends(get_db), current_user: User =
     return order
 
 @router.patch("/{order_id}/status")
-def update_status(order_id: int, status: StatusUpdate, db: Session = Depends(get_db), current_user = Depends(require_admin)):
+def update_status(
+    order_id: int,
+    status: StatusUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles("WAREHOUSE_MANAGER")),
+):
     try:
         return update_order_status(db, order_id, status)
+    except InsufficientStockError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
