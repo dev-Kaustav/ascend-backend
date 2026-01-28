@@ -30,6 +30,11 @@ def main():
         help="Optional group id to assign (role must match if provided)",
     )
     parser.add_argument(
+        "--skip-if-exists",
+        action="store_true",
+        help="Exit successfully if the user already exists",
+    )
+    parser.add_argument(
         "--inactive",
         action="store_true",
         help="Create the user as inactive (default is active)",
@@ -49,6 +54,9 @@ def main():
         )
         print(f"Created user id={user.id} email={user.email} role={user.role} active={user.is_active}")
     except ValueError as exc:
+        if args.skip_if_exists and str(exc) == "User already exists":
+            print(f"User already exists: {args.email}")
+            return
         print(f"Error: {exc}")
         sys.exit(1)
     finally:
