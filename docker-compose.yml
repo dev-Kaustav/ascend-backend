@@ -1,26 +1,9 @@
-version: '3.8'
-
 services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: ascend_db
-      POSTGRES_USER: ascend_user
-      POSTGRES_PASSWORD: ascend_pass
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  app:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgresql://ascend_user:ascend_pass@db/ascend_db
-      SECRET_KEY: mysecretkey
-
-volumes:
-  postgres_data:
+    app:
+        build: .
+        env_file: .env
+        ports:
+            - "8000:8000"
+        environment:
+            DATABASE_URL: ${DATABASE_URL}
+            SECRET_KEY: ${SECRET_KEY}

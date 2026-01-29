@@ -12,6 +12,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from app.db.base import Base
 import app.models  # noqa: F401

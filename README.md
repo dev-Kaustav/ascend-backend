@@ -1,37 +1,41 @@
 # Ascend Foods Backend
 
 ## Quickstart
-1) Build and start services:
+1) Set environment variables (export them or create a local `.env`).
+
+2) Build and start services:
 ```bash
 docker compose up --build -d
 ```
 If your Docker install uses the legacy CLI, replace `docker compose` with `docker-compose`.
 
-2) Run migrations:
+3) Run migrations:
 ```bash
 docker compose exec app alembic upgrade head
 ```
 
-3) Seed an admin user:
+4) Seed an admin user:
 ```bash
 docker compose exec app python seed.py
 ```
 
-4) Run tests:
+5) Run tests:
 ```bash
 docker compose exec app pytest
 ```
 
 ## Environment
-- `DATABASE_URL` (default in `docker-compose.yml`)
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (for local Postgres)
+- `DATABASE_URL`
 - `SECRET_KEY`
+- `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` (for `seed.py`)
 
 ## Curl Examples
 Login:
 ```bash
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@ascend.com","password":"password"}'
+  -d '{"email":"admin@ascend.com","password":"<admin-password>"}'
 ```
 
 Set token:

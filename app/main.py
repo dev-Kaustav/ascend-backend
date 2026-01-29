@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,14 +7,17 @@ from app.routers import auth, admin, orders, accounting
 
 app = FastAPI(title="Ascend Foods Backend")
 
+def _load_cors_origins():
+    raw_origins = os.getenv("CORS_ORIGINS", "")
+    if not raw_origins:
+        return []
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+cors_origins = _load_cors_origins()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://ascendfoods.in",
-        "https://www.ascendfoods.in"
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
