@@ -464,13 +464,16 @@ def main():
 
     for idx, retailer in enumerate(RETAILERS):
         assigned_salesman = salesman_list[idx % len(salesman_list)]
-        contact_info = f"Phone: {retailer['phone']} | City: {retailer['city']} | State: {retailer['state']} | Pincode: {retailer['pincode']}"
+        mobile_number = retailer["phone"]
         retailer_obj, _ = get_or_create(
             db,
             Retailer,
             name=retailer["name"],
             defaults={
-                "contact_info": contact_info,
+                "mobile_number": mobile_number,
+                "city": retailer["city"],
+                "state": retailer["state"],
+                "pincode": retailer["pincode"],
                 "assigned_salesman_id": assigned_salesman.id,
             },
         )
@@ -528,7 +531,7 @@ def main():
             db,
             Retailer,
             name=order_data["customer"],
-            defaults={"contact_info": f"Customer from {order_data['invoice']}", "assigned_salesman_id": salesman.id},
+            defaults={"mobile_number": None, "assigned_salesman_id": salesman.id},
         )
         if retailer.assigned_salesman_id is None:
             retailer.assigned_salesman_id = salesman.id
