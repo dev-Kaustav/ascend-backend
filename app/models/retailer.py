@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger
 
 from app.db.base import Base
 
@@ -7,5 +7,11 @@ class Retailer(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    contact_info = Column(Text)
+    mobile_number = Column(BigInteger)
+    address_line1 = Column(String)
+    address_line2 = Column(String)
+    city = Column(String)
+    state = Column(String)
+    pincode = Column(Integer)
+    gst_number = Column(String)
     assigned_salesman_id = Column(Integer, ForeignKey("employees.id"), nullable=True)

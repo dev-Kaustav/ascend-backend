@@ -1,6 +1,7 @@
 from datetime import datetime, date, timedelta
+import re
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.models import (
     Brand,
     Warehouse,
@@ -13,6 +14,7 @@ from app.models import (
     Order,
     OrderItem,
     OrderItemTax,
+    CreditNote,
     User,
     Permission,
     RolePermission,
@@ -33,6 +35,7 @@ from app.schemas.admin import (
 from app.models.enums import TransactionType, OrderStatus, EmployeeRole, PaymentStatus
 from app.services.transactions import transactional_session
 from app.core.security import get_password_hash
+from app.services.finance import calculate_order_outstanding
 
 def create_brand(db: Session, brand: BrandCreate):
     db_brand = Brand(**brand.dict())
@@ -42,9 +45,16 @@ def create_brand(db: Session, brand: BrandCreate):
     return db_brand
 
 def create_warehouse(db: Session, warehouse: WarehouseCreate):
-    db_warehouse = Warehouse(**warehouse.dict())
-    db.add(db_warehouse)
-    db.commit()
+    manager = db.query(Employee).filter(Employee.id == warehouse.manager_id).first()
+    if not manager:
+        raise ValueError("Warehouse manager not found")
+    if manager.role != EmployeeRole.WAREHOUSE_MANAGER:
+        raise ValueError("Selected user is not a warehouse manager")
+    with transactional_session(db):
+        db_warehouse = Warehouse(**warehouse.dict(exclude={"manager_id"}))
+        db.add(db_warehouse)
+        db.flush()
+        manager.warehouse_id = db_warehouse.id
     db.refresh(db_warehouse)
     return db_warehouse
 
@@ -221,6 +231,24 @@ def get_orders_page(
     for order, total_amount in rows:
         setattr(order, "total_amount", float(total_amount or 0))
         items.append(order)
+
+    order_ids = [order.id for order in items]
+    if order_ids:
+        detailed_orders = (
+            db.query(Order)
+            .options(
+                selectinload(Order.items).selectinload(OrderItem.taxes),
+                selectinload(Order.payments),
+                selectinload(Order.credit_notes).selectinload(CreditNote.items),
+            )
+            .filter(Order.id.in_(order_ids))
+            .all()
+        )
+        detailed_map = {order.id: order for order in detailed_orders}
+        for order in items:
+            detailed = detailed_map.get(order.id)
+            pending_amount = calculate_order_outstanding(detailed) if detailed else 0
+            setattr(order, "pending_amount", float(pending_amount))
     return items, total
 
 def get_admin_summary(db: Session):
@@ -342,6 +370,9 @@ def list_brands(db: Session):
 def list_salesmen(db: Session):
     return db.query(Employee).filter(Employee.role == EmployeeRole.SALESMAN).order_by(Employee.name.asc()).all()
 
+def list_warehouse_managers(db: Session):
+    return db.query(Employee).filter(Employee.role == EmployeeRole.WAREHOUSE_MANAGER).order_by(Employee.name.asc()).all()
+
 def list_drivers(db: Session):
     return db.query(Employee).filter(Employee.role == EmployeeRole.DRIVER).order_by(Employee.name.asc()).all()
 
@@ -460,12 +491,20 @@ def _count_active_admins(db: Session):
 def _normalize_email(email: str):
     return email.strip().lower()
 
+def _default_employee_name(email: str) -> str:
+    local_part = email.split("@")[0]
+    parts = [part for part in re.split(r"[._-]+", local_part) if part]
+    if not parts:
+        return local_part
+    return " ".join(part.capitalize() for part in parts)
+
 def create_user(
     db: Session,
     email: str,
     password: str,
     role: str | None,
     employee_id: int | None,
+    phone_number: int,
     is_active: bool = True,
     group_id: int | None = None,
 ):
@@ -493,13 +532,37 @@ def create_user(
     if not resolved_role:
         raise ValueError("Role is required")
 
+    employee = None
+    if employee_id:
+        employee = db.query(Employee).filter(Employee.id == employee_id).first()
+        if not employee:
+            raise ValueError("Employee not found")
+        if employee.role != resolved_role:
+            raise ValueError("Employee role does not match selected role")
+        employee.phone_number = phone_number
+    else:
+        employee = db.query(Employee).filter(Employee.email == normalized_email).first()
+        if employee:
+            if employee.role != resolved_role:
+                raise ValueError("Employee role does not match selected role")
+            employee.phone_number = phone_number
+        else:
+            employee = Employee(
+                name=_default_employee_name(normalized_email),
+                email=normalized_email,
+                role=resolved_role,
+                phone_number=phone_number,
+            )
+            db.add(employee)
+            db.flush()
+
     password_hash = get_password_hash(password)
     user = User(
         email=normalized_email,
         password_hash=password_hash,
         role=resolved_role,
         group_id=group.id if group else None,
-        employee_id=employee_id,
+        employee_id=employee.id if employee else None,
         is_active=is_active,
     )
     db.add(user)

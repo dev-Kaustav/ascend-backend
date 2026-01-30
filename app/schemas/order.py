@@ -66,6 +66,7 @@ class OrderListResponse(BaseModel):
     payment_status: Optional[str]
     created_at: Optional[datetime] = None
     total_amount: Optional[float] = None
+    pending_amount: Optional[float] = None
 
 class OrderListPage(BaseModel):
     items: list[OrderListResponse]

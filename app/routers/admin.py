@@ -12,6 +12,7 @@ from app.services.admin import (
     list_retailers,
     list_brands,
     list_salesmen,
+    list_warehouse_managers,
     list_drivers,
     list_skus,
     list_warehouses,
@@ -171,6 +172,7 @@ def list_lookups_endpoint(db: Session = Depends(get_db), current_user = Depends(
         "warehouses": list_warehouses(db),
         "skus": list_skus(db),
         "salesmen": list_salesmen(db),
+        "warehouse_managers": list_warehouse_managers(db),
         "drivers": list_drivers(db),
     }
 
@@ -210,6 +212,7 @@ def create_user_endpoint(payload: UserCreate, db: Session = Depends(get_db), cur
             payload.password,
             payload.role,
             payload.employee_id,
+            payload.phone_number,
             payload.is_active,
             payload.group_id,
         )

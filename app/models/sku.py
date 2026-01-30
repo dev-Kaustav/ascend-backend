@@ -19,6 +19,8 @@ class SKU(Base):
     sgst_amount = Column(Float)
     cgst_percent = Column(Float)
     cgst_amount = Column(Float)
+    igst_percent = Column(Float)
+    igst_amount = Column(Float)
     amount = Column(Float)
     weight = Column(Float)
     length_cm = Column(Float)
