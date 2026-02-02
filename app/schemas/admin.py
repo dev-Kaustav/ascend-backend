@@ -2,7 +2,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime
 
 class PermissionEntry(BaseModel):
     code: str
@@ -125,11 +125,11 @@ class RetailerResponse(BaseModel):
     assigned_salesman_id: Optional[int]
 
 class SKUCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     brand_id: int
     hsn_code: str
     pack_quantity: float
-    expiry_date: Optional[date] = None
     mrp: float
     discount_amount: float
     discount_percent: float
@@ -153,7 +153,6 @@ class SKUResponse(BaseModel):
     brand_id: int
     hsn_code: Optional[str]
     pack_quantity: Optional[float]
-    expiry_date: Optional[date]
     mrp: Optional[float]
     discount_amount: Optional[float]
     discount_percent: Optional[float]

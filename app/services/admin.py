@@ -1,7 +1,7 @@
 from datetime import datetime, date, timedelta
 import re
 from sqlalchemy import func
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, load_only
 from app.models import (
     Brand,
     Warehouse,
@@ -377,7 +377,35 @@ def list_drivers(db: Session):
     return db.query(Employee).filter(Employee.role == EmployeeRole.DRIVER).order_by(Employee.name.asc()).all()
 
 def list_skus(db: Session):
-    return db.query(SKU).order_by(SKU.name.asc()).all()
+    return (
+        db.query(SKU)
+        .options(
+            load_only(
+                SKU.id,
+                SKU.name,
+                SKU.brand_id,
+                SKU.hsn_code,
+                SKU.pack_quantity,
+                SKU.mrp,
+                SKU.discount_amount,
+                SKU.discount_percent,
+                SKU.rate,
+                SKU.sgst_percent,
+                SKU.sgst_amount,
+                SKU.cgst_percent,
+                SKU.cgst_amount,
+                SKU.igst_percent,
+                SKU.igst_amount,
+                SKU.amount,
+                SKU.weight,
+                SKU.length_cm,
+                SKU.width_cm,
+                SKU.height_cm,
+            )
+        )
+        .order_by(SKU.name.asc())
+        .all()
+    )
 
 def list_warehouses(db: Session):
     return db.query(Warehouse).order_by(Warehouse.name.asc()).all()
