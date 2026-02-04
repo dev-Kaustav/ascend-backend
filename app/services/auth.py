@@ -5,7 +5,7 @@ from app.models import User
 def authenticate_user(db: Session, email: str, password: str):
     normalized_email = email.strip().lower()
     user = db.query(User).filter(User.email == normalized_email).first()
-    if not user or not user.is_active or not verify_password(password, user.password_hash):
+    if not user or user.deleted_at or not user.is_active or not verify_password(password, user.password_hash):
         return None
     return user
 

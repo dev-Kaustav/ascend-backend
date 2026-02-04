@@ -16,6 +16,7 @@ class User(Base):
     role = Column(Enum(EmployeeRole, name="employee_role"), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     group = relationship("Group", back_populates="users")
     user_permissions = relationship("UserPermission", cascade="all, delete-orphan")

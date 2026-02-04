@@ -496,7 +496,12 @@ def _enrich_groups_with_permissions(db: Session, groups: list[Group]):
     all_permissions, perm_ids = _all_permissions(db)
     role_permissions = _role_permissions_map(db)
     group_permission_map = _group_permissions_map(db, [g.id for g in groups])
-    user_counts = dict(db.query(User.group_id, func.count(User.id)).group_by(User.group_id).all())
+    user_counts = dict(
+        db.query(User.group_id, func.count(User.id))
+        .filter(User.deleted_at.is_(None))
+        .group_by(User.group_id)
+        .all()
+    )
     for group in groups:
         role_value = _role_value(group.role)
         base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
@@ -506,13 +511,17 @@ def _enrich_groups_with_permissions(db: Session, groups: list[Group]):
     return groups
 
 def list_users(db: Session):
-    users = db.query(User).order_by(User.created_at.desc()).all()
+    users = db.query(User).filter(User.deleted_at.is_(None)).order_by(User.created_at.desc()).all()
     return _enrich_users_with_permissions(db, users)
 
 def _count_active_admins(db: Session):
     return (
         db.query(User)
-        .filter(User.role == EmployeeRole.ADMIN, User.is_active == True)  # noqa: E712
+        .filter(
+            User.role == EmployeeRole.ADMIN,
+            User.is_active == True,  # noqa: E712
+            User.deleted_at.is_(None),
+        )
         .count()
     )
 
@@ -602,6 +611,8 @@ def set_user_active(db: Session, user_id: int, is_active: bool, acting_user: Use
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User is deleted")
     if user.role == EmployeeRole.ADMIN and not is_active:
         active_admins = _count_active_admins(db)
         if active_admins <= 1:
@@ -617,6 +628,8 @@ def set_user_role(db: Session, user_id: int, role: str, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User is deleted")
     try:
         new_role = EmployeeRole(role)
     except ValueError:
@@ -649,6 +662,8 @@ def set_user_permission(db: Session, user_id: int, code: str, is_allowed: bool):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User is deleted")
     entry = (
         db.query(UserPermission)
         .filter(UserPermission.user_id == user_id, UserPermission.permission_id == perm.id)
@@ -728,6 +743,8 @@ def set_user_group(db: Session, user_id: int, group_id: int | None, acting_user:
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User is deleted")
     if group_id is None:
         user.group_id = None
         db.commit()
@@ -753,3 +770,34 @@ def set_user_group(db: Session, user_id: int, group_id: int | None, acting_user:
 
 def list_permissions(db: Session):
     return db.query(Permission).order_by(Permission.code.asc()).all()
+
+def set_user_password(db: Session, user_id: int, password: str, acting_user: User):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User is deleted")
+    if acting_user.id == user_id and user.role != EmployeeRole.ADMIN:
+        raise ValueError("Only admins can reset their own password here")
+    user.password_hash = get_password_hash(password)
+    db.commit()
+    db.refresh(user)
+    return _enrich_users_with_permissions(db, [user])[0]
+
+def soft_delete_user(db: Session, user_id: int, acting_user: User):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise ValueError("User not found")
+    if user.deleted_at:
+        raise ValueError("User already deleted")
+    if acting_user.id == user_id:
+        raise ValueError("Users cannot delete themselves")
+    if user.role == EmployeeRole.ADMIN and user.is_active:
+        active_admins = _count_active_admins(db)
+        if active_admins <= 1:
+            raise ValueError("Cannot delete the last active admin")
+    user.is_active = False
+    user.deleted_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
+    return _enrich_users_with_permissions(db, [user])[0]

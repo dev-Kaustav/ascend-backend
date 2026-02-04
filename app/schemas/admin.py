@@ -232,3 +232,6 @@ class UserPermissionUpdate(BaseModel):
 
 class UserGroupUpdate(BaseModel):
     group_id: Optional[int]
+
+class UserPasswordUpdate(BaseModel):
+    password: str

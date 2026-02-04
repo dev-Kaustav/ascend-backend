@@ -21,10 +21,13 @@ from app.services.admin import (
     list_users,
     set_user_active,
     set_user_role,
+    set_user_password,
     set_user_permission,
     list_permissions,
     list_groups,
     create_group,
+    create_user,
+    soft_delete_user,
     set_group_permission,
     set_user_group,
 )
@@ -44,6 +47,7 @@ from app.schemas.admin import (
     UserAdminResponse,
     UserRoleUpdate,
     UserPermissionUpdate,
+    UserPasswordUpdate,
     GroupCreate,
     GroupResponse,
     GroupPermissionUpdate,
@@ -242,6 +246,29 @@ def set_user_role_endpoint(
         return set_user_role(db, user_id, payload.role, current_user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.patch("/users/{user_id}/password", response_model=UserAdminResponse)
+def set_user_password_endpoint(
+    user_id: int,
+    payload: UserPasswordUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return set_user_password(db, user_id, payload.password, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.delete("/users/{user_id}", response_model=UserAdminResponse)
+def delete_user_endpoint(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return soft_delete_user(db, user_id, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 @router.patch("/users/{user_id}/group", response_model=UserAdminResponse)
 def set_user_group_endpoint(
