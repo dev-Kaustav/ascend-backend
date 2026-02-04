@@ -26,13 +26,31 @@ class GroupPermissionUpdate(BaseModel):
 
 class BrandCreate(BaseModel):
     name: str
-    contact_info: Optional[str]
+    poc_name: str
+    poc_phone_number: int
+    poc_email: Optional[str] = None
+    contact_info: Optional[str] = None
+
+    @field_validator("poc_phone_number")
+    @classmethod
+    def normalize_poc_phone_number(cls, value):
+        if value is None or value == "":
+            raise ValueError("POC phone number is required.")
+        raw = str(value)
+        if not raw.isdigit():
+            raise ValueError("POC phone number must be a 10 digit number.")
+        if len(raw) != 10:
+            raise ValueError("POC phone number must be 10 digits.")
+        return int(raw)
 
 class BrandResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
     contact_info: Optional[str]
+    poc_name: Optional[str] = None
+    poc_phone_number: Optional[int] = None
+    poc_email: Optional[str] = None
 
 class WarehouseCreate(BaseModel):
     name: str
@@ -129,7 +147,6 @@ class SKUCreate(BaseModel):
     name: str
     brand_id: int
     hsn_code: str
-    pack_quantity: float
     mrp: float
     discount_amount: float
     discount_percent: float
@@ -152,7 +169,6 @@ class SKUResponse(BaseModel):
     name: str
     brand_id: int
     hsn_code: Optional[str]
-    pack_quantity: Optional[float]
     mrp: Optional[float]
     discount_amount: Optional[float]
     discount_percent: Optional[float]
@@ -215,6 +231,7 @@ class UserAdminResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     email: str
+    phone_number: Optional[int] = None
     role: str
     group_id: Optional[int] = None
     group_name: Optional[str] = None

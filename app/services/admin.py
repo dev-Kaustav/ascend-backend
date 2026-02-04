@@ -385,7 +385,6 @@ def list_skus(db: Session):
                 SKU.name,
                 SKU.brand_id,
                 SKU.hsn_code,
-                SKU.pack_quantity,
                 SKU.mrp,
                 SKU.discount_amount,
                 SKU.discount_percent,
@@ -478,6 +477,13 @@ def _enrich_users_with_permissions(db: Session, users: list[User]):
         group_map = {g.id: g for g in db.query(Group).filter(Group.id.in_(group_ids)).all()}
     group_permission_map = _group_permissions_map(db, group_ids)
     user_permission_map = _user_permissions_map(db, [u.id for u in users])
+    employee_ids = [u.employee_id for u in users if u.employee_id]
+    employee_phone_map = {}
+    if employee_ids:
+        employee_phone_map = {
+            emp.id: emp.phone_number
+            for emp in db.query(Employee.id, Employee.phone_number).filter(Employee.id.in_(employee_ids)).all()
+        }
     for user in users:
         role_value = _role_value(user.role)
         base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
@@ -488,6 +494,7 @@ def _enrich_users_with_permissions(db: Session, users: list[User]):
         user.permissions = _build_permission_entries(all_permissions, base_ids, *overrides)
         group = group_map.get(user.group_id)
         user.group_name = group.name if group else None
+        user.phone_number = employee_phone_map.get(user.employee_id)
     return users
 
 def _enrich_groups_with_permissions(db: Session, groups: list[Group]):
