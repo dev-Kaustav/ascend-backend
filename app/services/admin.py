@@ -1,7 +1,11 @@
 from datetime import datetime, date, timedelta
+from io import BytesIO
 import re
 from sqlalchemy import func
-from sqlalchemy.orm import Session, selectinload, load_only
+from sqlalchemy.orm import Session, selectinload, load_only, aliased
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 from app.models import (
     Brand,
     Warehouse,
@@ -45,12 +49,12 @@ def create_brand(db: Session, brand: BrandCreate):
     return db_brand
 
 def create_warehouse(db: Session, warehouse: WarehouseCreate):
-    manager = db.query(Employee).filter(Employee.id == warehouse.manager_id).first()
-    if not manager:
-        raise ValueError("Warehouse manager not found")
-    if manager.role != EmployeeRole.WAREHOUSE_MANAGER:
-        raise ValueError("Selected user is not a warehouse manager")
     with transactional_session(db):
+        manager = db.query(Employee).filter(Employee.id == warehouse.manager_id).first()
+        if not manager:
+            raise ValueError("Warehouse manager not found")
+        if manager.role != EmployeeRole.WAREHOUSE_MANAGER:
+            raise ValueError("Selected user is not a warehouse manager")
         db_warehouse = Warehouse(**warehouse.dict(exclude={"manager_id"}))
         db.add(db_warehouse)
         db.flush()
@@ -100,6 +104,7 @@ def add_inventory_receipt(db: Session, receipt: InventoryReceiptCreate):
 
             db_batch = SKUBatch(
                 sku_id=item.sku_id,
+                warehouse_id=receipt.warehouse_id,
                 mfg_date=datetime.strptime(item.mfg_date, "%Y-%m-%d") if item.mfg_date else None,
                 expiry_date=datetime.strptime(item.expiry_date, "%Y-%m-%d") if item.expiry_date else None,
                 quantity_received=item.quantity,
@@ -133,15 +138,51 @@ def _outgoing_orders_query(db: Session):
         Order.to_entity_type == "RETAILER",
     )
 
-def get_inventory(db: Session, limit: int = 50, offset: int = 0):
-    query = db.query(Inventory)
-    total = query.count()
-    items = (
-        query.order_by(Inventory.warehouse_id.asc(), Inventory.sku_id.asc())
+def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: int | None = None):
+    expiry_query = (
+        db.query(
+            SKUBatch.sku_id.label("sku_id"),
+            SKUBatch.warehouse_id.label("warehouse_id"),
+            func.min(SKUBatch.expiry_date).label("earliest_expiry"),
+        )
+        .filter(SKUBatch.expiry_date.isnot(None))
+        .filter(SKUBatch.remaining_quantity > 0)
+    )
+    if warehouse_id:
+        expiry_query = expiry_query.filter(SKUBatch.warehouse_id == warehouse_id)
+    expiry_subquery = (
+        expiry_query
+        .group_by(SKUBatch.sku_id, SKUBatch.warehouse_id)
+        .subquery()
+    )
+
+    base_query = db.query(Inventory)
+    if warehouse_id:
+        base_query = base_query.filter(Inventory.warehouse_id == warehouse_id)
+    total = base_query.count()
+    rows = (
+        base_query
+        .with_entities(Inventory, expiry_subquery.c.earliest_expiry)
+        .outerjoin(
+            expiry_subquery,
+            (expiry_subquery.c.sku_id == Inventory.sku_id)
+            & (expiry_subquery.c.warehouse_id == Inventory.warehouse_id),
+        )
+        .order_by(Inventory.warehouse_id.asc(), Inventory.sku_id.asc())
         .limit(limit)
         .offset(offset)
         .all()
     )
+
+    items = [
+        {
+            "sku_id": inventory.sku_id,
+            "warehouse_id": inventory.warehouse_id,
+            "total_quantity": inventory.total_quantity,
+            "earliest_expiry": earliest_expiry,
+        }
+        for inventory, earliest_expiry in rows
+    ]
     return items, total
 
 def _parse_date(value: str, is_end: bool) -> datetime | None:
@@ -154,6 +195,40 @@ def _parse_date(value: str, is_end: bool) -> datetime | None:
     if is_end:
         return datetime.combine(parsed + timedelta(days=1), datetime.min.time())
     return datetime.combine(parsed, datetime.min.time())
+
+def _apply_order_filters(
+    query,
+    status: str | None = None,
+    payment_status: str | None = None,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    has_invoice: bool | None = None,
+):
+    if status:
+        try:
+            query = query.filter(Order.status == OrderStatus(status))
+        except ValueError:
+            pass
+    if payment_status:
+        try:
+            query = query.filter(Order.payment_status == PaymentStatus(payment_status))
+        except ValueError:
+            pass
+    if search:
+        query = query.filter(Order.invoice_number.ilike(f"%{search}%"))
+    if has_invoice is True:
+        query = query.filter(Order.invoice_number.isnot(None))
+    if has_invoice is False:
+        query = query.filter(Order.invoice_number.is_(None))
+
+    from_dt = _parse_date(from_date, False)
+    to_dt = _parse_date(to_date, True)
+    if from_dt:
+        query = query.filter(Order.created_at >= from_dt)
+    if to_dt:
+        query = query.filter(Order.created_at < to_dt)
+    return query
 
 def _totals_subqueries(db: Session):
     base_expr = (OrderItem.quantity * OrderItem.unit_price) - OrderItem.discount_amount
@@ -188,29 +263,15 @@ def get_orders_page(
     has_invoice: bool | None = None,
 ):
     query = _outgoing_orders_query(db)
-    if status:
-        try:
-            query = query.filter(Order.status == OrderStatus(status))
-        except ValueError:
-            pass
-    if payment_status:
-        try:
-            query = query.filter(Order.payment_status == PaymentStatus(payment_status))
-        except ValueError:
-            pass
-    if search:
-        query = query.filter(Order.invoice_number.ilike(f"%{search}%"))
-    if has_invoice is True:
-        query = query.filter(Order.invoice_number.isnot(None))
-    if has_invoice is False:
-        query = query.filter(Order.invoice_number.is_(None))
-
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    if from_dt:
-        query = query.filter(Order.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Order.created_at < to_dt)
+    query = _apply_order_filters(
+        query,
+        status=status,
+        payment_status=payment_status,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        has_invoice=has_invoice,
+    )
 
     total = query.count()
 
@@ -250,6 +311,153 @@ def get_orders_page(
             pending_amount = calculate_order_outstanding(detailed) if detailed else 0
             setattr(order, "pending_amount", float(pending_amount))
     return items, total
+
+def _naive_datetime(value: datetime | None) -> datetime | None:
+    if not value:
+        return None
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+def _discount_percent(quantity: float, unit_price: float, discount_amount: float) -> float:
+    base = max((quantity or 0) * (unit_price or 0), 0)
+    if not base or not discount_amount:
+        return 0.0
+    percent = (discount_amount / base) * 100
+    return max(0.0, min(100.0, percent))
+
+def _line_amount(quantity: float, unit_price: float, discount_amount: float) -> float:
+    base = (quantity or 0) * (unit_price or 0) - (discount_amount or 0)
+    return max(base, 0.0)
+
+def get_order_export_rows(
+    db: Session,
+    status: str | None = None,
+    payment_status: str | None = None,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    has_invoice: bool | None = None,
+):
+    order_salesman = aliased(Employee)
+    retailer_salesman = aliased(Employee)
+    query = (
+        db.query(Order, OrderItem, SKU, Retailer, order_salesman, retailer_salesman)
+        .join(OrderItem, OrderItem.order_id == Order.id)
+        .join(SKU, SKU.id == OrderItem.sku_id)
+        .join(Retailer, Retailer.id == Order.to_entity_id)
+        .outerjoin(order_salesman, order_salesman.id == Order.salesman_id)
+        .outerjoin(retailer_salesman, retailer_salesman.id == Retailer.assigned_salesman_id)
+        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
+    )
+    query = _apply_order_filters(
+        query,
+        status=status,
+        payment_status=payment_status,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        has_invoice=has_invoice,
+    )
+    query = query.order_by(Order.created_at.desc(), Order.id.desc(), OrderItem.id.asc())
+
+    rows = []
+    for order, item, sku, retailer, order_rep, retailer_rep in query.all():
+        created_at = _naive_datetime(order.created_at)
+        order_date = created_at.date() if created_at else None
+        quantity = float(item.quantity or 0)
+        unit_price = float(item.unit_price or 0)
+        discount_amount = float(item.discount_amount or 0)
+        discount_percent = _discount_percent(quantity, unit_price, discount_amount)
+        amount = _line_amount(quantity, unit_price, discount_amount)
+        salesman = order_rep or retailer_rep
+        rows.append(
+            {
+                "Created At": created_at,
+                "Order Date": order_date,
+                "Order ID": order.id,
+                "Customer Name ( Retailer Name)": retailer.name,
+                "Retailer ID": retailer.id,
+                "SKU": sku.name,
+                "SKU Quantity": quantity,
+                "Salesman Name": salesman.name if salesman else None,
+                "Salesman Number": str(salesman.phone_number) if salesman and salesman.phone_number else None,
+                "MRP": float(sku.mrp) if sku.mrp is not None else None,
+                "Discount %": discount_percent,
+                "Amount": amount,
+                "Rate": unit_price,
+            }
+        )
+    return rows
+
+def export_orders_excel(
+    db: Session,
+    status: str | None = None,
+    payment_status: str | None = None,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    has_invoice: bool | None = None,
+) -> BytesIO:
+    rows = get_order_export_rows(
+        db,
+        status=status,
+        payment_status=payment_status,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        has_invoice=has_invoice,
+    )
+
+    headers = [
+        "Created At",
+        "Order Date",
+        "Order ID",
+        "Customer Name ( Retailer Name)",
+        "Retailer ID",
+        "SKU",
+        "SKU Quantity",
+        "Salesman Name",
+        "Salesman Number",
+        "MRP",
+        "Discount %",
+        "Amount",
+        "Rate",
+    ]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Orders"
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+
+    for row in rows:
+        sheet.append([row.get(header) for header in headers])
+
+    sheet.freeze_panes = "A2"
+
+    date_formats = {1: "yyyy-mm-dd hh:mm", 2: "yyyy-mm-dd"}
+    for col_idx, fmt in date_formats.items():
+        for cell in sheet.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+            cell[0].number_format = fmt
+
+    for col_idx in (7, 10, 11, 12, 13):
+        for cell in sheet.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+            cell[0].number_format = "0.00"
+
+    widths = [len(header) for header in headers]
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, max_col=len(headers)):
+        for idx, cell in enumerate(row):
+            value = cell.value
+            text = "" if value is None else str(value)
+            if len(text) > widths[idx]:
+                widths[idx] = len(text)
+    for idx, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(idx)].width = min(max(width + 2, 10), 40)
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
 
 def get_admin_summary(db: Session):
     orders_count = _outgoing_orders_query(db).count()
@@ -466,6 +674,24 @@ def _build_permission_entries(all_permissions, base_ids: set[int], *overrides: d
             state.update(override)
     return [{"code": perm.code, "is_allowed": state.get(perm.id, False)} for perm in all_permissions]
 
+def get_user_permission_entries(db: Session, user: User):
+    all_permissions, perm_ids = _all_permissions(db)
+    role_permissions = _role_permissions_map(db)
+    role_value = _role_value(user.role)
+    base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
+    overrides = []
+    if user.group_id:
+        overrides.append(_group_permissions_map(db, [user.group_id]).get(user.group_id, {}))
+    overrides.append(_user_permissions_map(db, [user.id]).get(user.id, {}))
+    return _build_permission_entries(all_permissions, base_ids, *overrides)
+
+def user_has_permission(db: Session, user: User, code: str) -> bool:
+    permissions = get_user_permission_entries(db, user)
+    for entry in permissions:
+        if entry["code"] == code:
+            return bool(entry["is_allowed"])
+    return False
+
 def _enrich_users_with_permissions(db: Session, users: list[User]):
     if not users:
         return users
@@ -671,16 +897,27 @@ def set_user_permission(db: Session, user_id: int, code: str, is_allowed: bool):
         raise ValueError("User not found")
     if user.deleted_at:
         raise ValueError("User is deleted")
-    entry = (
-        db.query(UserPermission)
-        .filter(UserPermission.user_id == user_id, UserPermission.permission_id == perm.id)
-        .first()
-    )
-    if entry:
-        entry.is_allowed = is_allowed
-    else:
-        entry = UserPermission(user_id=user_id, permission_id=perm.id, is_allowed=is_allowed)
-        db.add(entry)
+    def upsert_user_permission(permission_id: int, allowed: bool):
+        entry = (
+            db.query(UserPermission)
+            .filter(UserPermission.user_id == user_id, UserPermission.permission_id == permission_id)
+            .first()
+        )
+        if entry:
+            entry.is_allowed = allowed
+        else:
+            db.add(UserPermission(user_id=user_id, permission_id=permission_id, is_allowed=allowed))
+
+    updates = {perm.id: is_allowed}
+    if code == "inventory.manage" and is_allowed:
+        view_perm = ensure_permission(db, "inventory.view", "View inventory")
+        updates[view_perm.id] = True
+    if code == "inventory.view" and not is_allowed:
+        manage_perm = ensure_permission(db, "inventory.manage", "Manage inventory")
+        updates[manage_perm.id] = False
+
+    for permission_id, allowed in updates.items():
+        upsert_user_permission(permission_id, allowed)
     db.commit()
     return {"code": perm.code, "is_allowed": is_allowed}
 
@@ -718,30 +955,45 @@ def set_group_permission(db: Session, group_id: int, code: str, is_allowed: bool
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise ValueError("Group not found")
-    entry = (
-        db.query(GroupPermission)
-        .filter(GroupPermission.group_id == group_id, GroupPermission.permission_id == perm.id)
-        .first()
-    )
-    if entry:
-        entry.is_allowed = is_allowed
-    else:
-        entry = GroupPermission(group_id=group_id, permission_id=perm.id, is_allowed=is_allowed)
-        db.add(entry)
+    def upsert_group_permission(permission_id: int, allowed: bool):
+        entry = (
+            db.query(GroupPermission)
+            .filter(GroupPermission.group_id == group_id, GroupPermission.permission_id == permission_id)
+            .first()
+        )
+        if entry:
+            entry.is_allowed = allowed
+        else:
+            db.add(GroupPermission(group_id=group_id, permission_id=permission_id, is_allowed=allowed))
+
+    def upsert_user_permission(user_id: int, permission_id: int, allowed: bool):
+        entry = (
+            db.query(UserPermission)
+            .filter(UserPermission.user_id == user_id, UserPermission.permission_id == permission_id)
+            .first()
+        )
+        if entry:
+            entry.is_allowed = allowed
+        else:
+            db.add(UserPermission(user_id=user_id, permission_id=permission_id, is_allowed=allowed))
+
+    updates = {perm.id: is_allowed}
+    if code == "inventory.manage" and is_allowed:
+        view_perm = ensure_permission(db, "inventory.view", "View inventory")
+        updates[view_perm.id] = True
+    if code == "inventory.view" and not is_allowed:
+        manage_perm = ensure_permission(db, "inventory.manage", "Manage inventory")
+        updates[manage_perm.id] = False
+
+    for permission_id, allowed in updates.items():
+        upsert_group_permission(permission_id, allowed)
     db.flush()
 
     # Propagate to all users in this group by aligning their explicit permission to the group value.
     user_ids = [row[0] for row in db.query(User.id).filter(User.group_id == group_id).all()]
     for user_id in user_ids:
-        user_entry = (
-            db.query(UserPermission)
-            .filter(UserPermission.user_id == user_id, UserPermission.permission_id == perm.id)
-            .first()
-        )
-        if user_entry:
-            user_entry.is_allowed = is_allowed
-        else:
-            db.add(UserPermission(user_id=user_id, permission_id=perm.id, is_allowed=is_allowed))
+        for permission_id, allowed in updates.items():
+            upsert_user_permission(user_id, permission_id, allowed)
 
     db.commit()
     return {"code": perm.code, "is_allowed": is_allowed}

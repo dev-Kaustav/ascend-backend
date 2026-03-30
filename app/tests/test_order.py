@@ -9,7 +9,7 @@ from app.models import SKU, SKUBatch, Inventory, User, Brand
 from app.models.enums import EmployeeRole
 
 def test_fefo_allocation(db):
-    brand = Brand(name="Brand", contact_info="test")
+    brand = Brand(name="Brand")
     db.add(brand)
     db.commit()
     sku = SKU(name="Test SKU", brand_id=brand.id)
@@ -17,12 +17,14 @@ def test_fefo_allocation(db):
     db.commit()
     batch_early = SKUBatch(
         sku_id=sku.id,
+        warehouse_id=1,
         expiry_date=date(2024, 1, 1),
         quantity_received=5,
         remaining_quantity=5
     )
     batch_late = SKUBatch(
         sku_id=sku.id,
+        warehouse_id=1,
         expiry_date=date(2024, 6, 1),
         quantity_received=10,
         remaining_quantity=10
@@ -46,13 +48,13 @@ def test_fefo_allocation(db):
     assert refreshed_late.remaining_quantity == 9
 
 def test_insufficient_stock(db):
-    brand = Brand(name="Brand", contact_info="test")
+    brand = Brand(name="Brand")
     db.add(brand)
     db.commit()
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.commit()
-    batch = SKUBatch(sku_id=sku.id, quantity_received=5, remaining_quantity=5)
+    batch = SKUBatch(sku_id=sku.id, warehouse_id=1, quantity_received=5, remaining_quantity=5)
     db.add(batch)
     db.commit()
     inventory = Inventory(sku_id=sku.id, warehouse_id=1, total_quantity=5)
@@ -67,13 +69,13 @@ def test_insufficient_stock(db):
 
 
 def test_insufficient_stock_returns_409(client, db):
-    brand = Brand(name="Brand", contact_info="test")
+    brand = Brand(name="Brand")
     db.add(brand)
     db.flush()
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.flush()
-    batch = SKUBatch(sku_id=sku.id, quantity_received=5, remaining_quantity=5)
+    batch = SKUBatch(sku_id=sku.id, warehouse_id=1, quantity_received=5, remaining_quantity=5)
     db.add(batch)
     inventory = Inventory(sku_id=sku.id, warehouse_id=1, total_quantity=5)
     db.add(inventory)

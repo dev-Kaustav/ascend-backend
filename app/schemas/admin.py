@@ -2,7 +2,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 
 class PermissionEntry(BaseModel):
     code: str
@@ -29,7 +29,6 @@ class BrandCreate(BaseModel):
     poc_name: str
     poc_phone_number: int
     poc_email: Optional[str] = None
-    contact_info: Optional[str] = None
 
     @field_validator("poc_phone_number")
     @classmethod
@@ -47,7 +46,6 @@ class BrandResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
-    contact_info: Optional[str]
     poc_name: Optional[str] = None
     poc_phone_number: Optional[int] = None
     poc_email: Optional[str] = None
@@ -201,6 +199,7 @@ class InventoryResponse(BaseModel):
     sku_id: int
     warehouse_id: int
     total_quantity: float
+    earliest_expiry: Optional[date] = None
 
 class InventoryPage(BaseModel):
     items: list[InventoryResponse]

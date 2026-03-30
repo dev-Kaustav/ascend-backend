@@ -48,7 +48,7 @@ Create brand:
 curl -X POST http://localhost:8000/admin/brands \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"Brand A","contact_info":"brand@example.com"}'
+  -d '{"name":"Brand A","poc_name":"Brand POC","poc_phone_number":9876543210,"poc_email":"brand@example.com"}'
 ```
 
 Add inventory:

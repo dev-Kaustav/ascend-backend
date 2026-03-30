@@ -1,4 +1,6 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.admin import (
@@ -9,6 +11,7 @@ from app.services.admin import (
     add_inventory_receipt,
     get_inventory,
     get_orders_page,
+    export_orders_excel,
     list_retailers,
     list_brands,
     list_salesmen,
@@ -30,7 +33,9 @@ from app.services.admin import (
     soft_delete_user,
     set_group_permission,
     set_user_group,
+    user_has_permission,
 )
+from app.services.access_rules import list_access_rules, upsert_access_rule, delete_access_rule
 from app.schemas.admin import (
     BrandCreate,
     BrandResponse,
@@ -54,6 +59,7 @@ from app.schemas.admin import (
     UserGroupUpdate,
 )
 from app.schemas.order import OrderListPage
+from app.schemas.access_rules import AccessRuleResponse, AccessRuleUpsert
 from app.core.deps import require_admin, require_roles, require_warehouse_manager
 
 router = APIRouter()
@@ -99,6 +105,8 @@ def add_inventory_receipt_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_warehouse_manager),
 ):
+    if not user_has_permission(db, current_user, "inventory.manage"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     return add_inventory_receipt(db, payload)
 
 @router.get("/inventory", response_model=InventoryPage)
@@ -107,8 +115,11 @@ def get_inventory_endpoint(
     current_user = Depends(require_warehouse_manager),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    warehouse_id: int | None = Query(None, ge=1),
 ):
-    items, total = get_inventory(db, limit=limit, offset=offset)
+    if not user_has_permission(db, current_user, "inventory.view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    items, total = get_inventory(db, limit=limit, offset=offset, warehouse_id=warehouse_id)
     return {"items": items, "total": total}
 
 @router.get("/orders", response_model=OrderListPage)
@@ -136,6 +147,34 @@ def get_orders_endpoint(
         has_invoice=has_invoice,
     )
     return {"items": items, "total": total}
+
+@router.get("/orders/export")
+def export_orders_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER")),
+    status: str | None = Query(None),
+    payment_status: str | None = Query(None),
+    search: str | None = Query(None),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    has_invoice: bool | None = Query(None),
+):
+    output = export_orders_excel(
+        db,
+        status=status,
+        payment_status=payment_status,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        has_invoice=has_invoice,
+    )
+    filename = f"orders_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 @router.get("/summary")
 def get_admin_summary_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
@@ -183,6 +222,29 @@ def list_lookups_endpoint(db: Session = Depends(get_db), current_user = Depends(
 @router.get("/groups", response_model=list[GroupResponse])
 def list_groups_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
     return list_groups(db)
+
+@router.get("/access-rules", response_model=list[AccessRuleResponse])
+def list_access_rules_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    return list_access_rules(db)
+
+@router.patch("/access-rules", response_model=AccessRuleResponse)
+def upsert_access_rule_endpoint(
+    payload: AccessRuleUpsert,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    return upsert_access_rule(db, payload.path, payload.roles or [], payload.permissions or [])
+
+@router.delete("/access-rules/{rule_id}", response_model=dict)
+def delete_access_rule_endpoint(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return delete_access_rule(db, rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 @router.post("/groups", response_model=GroupResponse)
 def create_group_endpoint(payload: GroupCreate, db: Session = Depends(get_db), current_user = Depends(require_admin)):

@@ -21,14 +21,14 @@ def test_admin_vs_salesman_access(client, db):
 
     admin_response = client.post(
         "/admin/brands",
-        json={"name": "Brand A", "contact_info": "test"},
+        json={"name": "Brand A", "poc_name": "POC A", "poc_phone_number": 9876543210, "poc_email": "poc-a@example.com"},
         headers=admin_headers
     )
     assert admin_response.status_code == 200
 
     salesman_response = client.post(
         "/admin/brands",
-        json={"name": "Brand B", "contact_info": "test"},
+        json={"name": "Brand B", "poc_name": "POC B", "poc_phone_number": 9876543211, "poc_email": "poc-b@example.com"},
         headers=salesman_headers
     )
     assert salesman_response.status_code == 403

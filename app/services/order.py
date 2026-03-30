@@ -44,9 +44,19 @@ def _allocate_inventory_for_order(db: Session, order: Order):
         if not inventory or inventory.total_quantity < item.quantity:
             raise InsufficientStockError("Insufficient stock")
 
-        batches = db.query(SKUBatch).filter(
-            and_(SKUBatch.sku_id == item.sku_id, SKUBatch.remaining_quantity > 0)
-        ).order_by(SKUBatch.expiry_date.is_(None), SKUBatch.expiry_date.asc()).with_for_update().all()
+        batches = (
+            db.query(SKUBatch)
+            .filter(
+                and_(
+                    SKUBatch.sku_id == item.sku_id,
+                    SKUBatch.warehouse_id == warehouse_id,
+                    SKUBatch.remaining_quantity > 0,
+                )
+            )
+            .order_by(SKUBatch.expiry_date.is_(None), SKUBatch.expiry_date.asc())
+            .with_for_update()
+            .all()
+        )
         remaining_qty = item.quantity
         for batch in batches:
             if remaining_qty <= 0:

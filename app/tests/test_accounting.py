@@ -7,7 +7,7 @@ from app.services.accounting import create_payment, create_credit_note
 
 
 def _create_order_with_item(db, quantity=1):
-    brand = Brand(name="Brand", contact_info="test")
+    brand = Brand(name="Brand")
     db.add(brand)
     db.flush()
     sku = SKU(name="SKU", brand_id=brand.id)

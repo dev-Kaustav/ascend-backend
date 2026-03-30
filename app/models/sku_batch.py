@@ -8,6 +8,7 @@ class SKUBatch(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     sku_id = Column(Integer, ForeignKey("skus.id"), nullable=False)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     mfg_date = Column(Date)
     expiry_date = Column(Date)
     quantity_received = Column(Float, nullable=False)

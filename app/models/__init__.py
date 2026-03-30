@@ -19,3 +19,4 @@ from .role_permission import RolePermission
 from .user_permission import UserPermission
 from .group import Group
 from .group_permission import GroupPermission
+from .access_rule import AccessRule
