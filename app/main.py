@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, admin, orders, accounting
+from app.routers import auth, admin, orders, accounting, bill_labels
 
 app = FastAPI(title="Ascend Foods Backend")
 
@@ -28,3 +28,4 @@ app.include_router(admin.router, prefix="/admin", tags=["admin"])
 app.include_router(orders.router, prefix="/orders", tags=["orders"])
 app.include_router(accounting.router, prefix="/accounting", tags=["accounting"])
 app.include_router(accounting.public_router, tags=["accounting"])
+app.include_router(bill_labels.router, prefix="/bill-labels", tags=["bill-labels"])

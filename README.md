@@ -9,6 +9,15 @@ docker compose up --build -d
 ```
 If your Docker install uses the legacy CLI, replace `docker compose` with `docker-compose`.
 
+Shortcuts:
+```bash
+make prod
+```
+Or:
+```bash
+make dev
+```
+
 3) Run migrations:
 ```bash
 docker compose exec app alembic upgrade head

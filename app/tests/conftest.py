@@ -11,7 +11,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from app.db.base import Base
@@ -19,11 +19,13 @@ import app.models  # noqa: F401
 from app.main import app
 from app.db.session import get_db
 
-engine = create_engine(
-    os.environ["DATABASE_URL"],
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
+database_url = os.environ["DATABASE_URL"]
+engine_kwargs = {}
+if database_url.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+    engine_kwargs["poolclass"] = StaticPool
+
+engine = create_engine(database_url, **engine_kwargs)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
