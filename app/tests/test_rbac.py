@@ -1,5 +1,5 @@
 from app.core.security import create_access_token, get_password_hash
-from app.models import User, Order
+from app.models import User, Order, Employee, Warehouse
 from app.models.enums import EmployeeRole, OrderStatus
 
 
@@ -61,3 +61,66 @@ def test_accountant_access(client, db):
         headers=salesman_headers
     )
     assert salesman_response.status_code == 403
+
+
+def test_create_warehouse_endpoint_persists_after_auth_dependency_transaction(client, db):
+    admin_headers = _auth_header_for(db, EmployeeRole.ADMIN)
+    manager = Employee(
+        name="Warehouse Manager",
+        email="warehouse.manager@example.com",
+        role=EmployeeRole.WAREHOUSE_MANAGER,
+    )
+    db.add(manager)
+    db.commit()
+
+    response = client.post(
+        "/admin/warehouses",
+        json={
+            "name": "Central Warehouse",
+            "location": "HQ",
+            "address_line1": None,
+            "address_line2": None,
+            "city": None,
+            "state": None,
+            "pincode": None,
+            "manager_id": manager.id,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    db.rollback()
+
+    warehouse = db.query(Warehouse).filter(Warehouse.name == "Central Warehouse").first()
+    refreshed_manager = db.query(Employee).filter(Employee.id == manager.id).first()
+    assert warehouse is not None
+    assert refreshed_manager.warehouse_id == warehouse.id
+
+
+def test_create_warehouse_endpoint_returns_400_for_invalid_manager(client, db):
+    admin_headers = _auth_header_for(db, EmployeeRole.ADMIN)
+    salesman = Employee(
+        name="Salesman",
+        email="salesman.manager@example.com",
+        role=EmployeeRole.SALESMAN,
+    )
+    db.add(salesman)
+    db.commit()
+
+    response = client.post(
+        "/admin/warehouses",
+        json={
+            "name": "Invalid Warehouse",
+            "location": None,
+            "address_line1": None,
+            "address_line2": None,
+            "city": None,
+            "state": None,
+            "pincode": None,
+            "manager_id": salesman.id,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Selected user is not a warehouse manager"

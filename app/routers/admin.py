@@ -78,7 +78,10 @@ def create_warehouse_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_admin),
 ):
-    return create_warehouse(db, warehouse)
+    try:
+        return create_warehouse(db, warehouse)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/retailers", response_model=RetailerResponse)
 def create_retailer_endpoint(

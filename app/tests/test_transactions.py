@@ -2,17 +2,24 @@ from app.models import Brand
 from app.services.transactions import transactional_session
 
 
-def test_transactional_session_keeps_outer_transaction_open(db):
-    outer = db.begin()
+def test_transactional_session_commits_active_transaction(db):
+    db.add(Brand(name="outer"))
+    db.flush()
+
+    with transactional_session(db):
+        db.add(Brand(name="inner"))
+
+    db.rollback()
+
+    assert db.query(Brand).count() == 2
+
+
+def test_transactional_session_rolls_back_on_error(db):
     try:
-        db.add(Brand(name="outer"))
         with transactional_session(db):
             db.add(Brand(name="inner"))
-
-        assert db.in_transaction() is True
-        outer.rollback()
-    finally:
-        if db.in_transaction():
-            db.rollback()
+            raise ValueError("boom")
+    except ValueError:
+        pass
 
     assert db.query(Brand).count() == 0
