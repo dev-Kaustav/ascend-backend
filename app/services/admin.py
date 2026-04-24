@@ -276,7 +276,7 @@ def get_orders_page(
     total = query.count()
 
     base_sub, tax_sub = _totals_subqueries(db)
-    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(tax_sub.c.tax_total, 0)
+    total_expr = func.coalesce(base_sub.c.base_total, 0)
 
     rows = (
         query.outerjoin(base_sub, base_sub.c.order_id == Order.id)
@@ -290,7 +290,7 @@ def get_orders_page(
 
     items = []
     for order, total_amount in rows:
-        setattr(order, "total_amount", float(total_amount or 0))
+        setattr(order, "total_amount", round(float(total_amount or 0), 2))
         items.append(order)
 
     order_ids = [order.id for order in items]
@@ -326,7 +326,7 @@ def _discount_percent(quantity: float, unit_price: float, discount_amount: float
 
 def _line_amount(quantity: float, unit_price: float, discount_amount: float) -> float:
     base = (quantity or 0) * (unit_price or 0) - (discount_amount or 0)
-    return max(base, 0.0)
+    return round(max(base, 0.0), 2)
 
 def get_order_export_rows(
     db: Session,
@@ -471,7 +471,7 @@ def get_admin_summary(db: Session):
     payment_status = {row[0].value if hasattr(row[0], "value") else row[0]: row[1] for row in payment_rows}
 
     base_sub, tax_sub = _totals_subqueries(db)
-    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(tax_sub.c.tax_total, 0)
+    total_expr = func.coalesce(base_sub.c.base_total, 0)
     outgoing_total = (
         db.query(func.coalesce(func.sum(total_expr), 0))
         .select_from(Order)
@@ -481,6 +481,7 @@ def get_admin_summary(db: Session):
         .scalar()
         or 0
     )
+    outgoing_total = round(float(outgoing_total or 0), 2)
     outstanding_total = (
         db.query(func.coalesce(func.sum(total_expr), 0))
         .select_from(Order)
@@ -494,6 +495,7 @@ def get_admin_summary(db: Session):
         .scalar()
         or 0
     )
+    outstanding_total = round(float(outstanding_total or 0), 2)
 
     since = datetime.utcnow() - timedelta(days=30)
     timeline_rows = (

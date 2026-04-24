@@ -21,7 +21,7 @@ def create_payment(db: Session, order_id: int, payment: PaymentCreate):
     with transactional_session(db):
         db_payment = Account(
             order_id=order_id,
-            amount=payment.amount,
+            amount=round(float(payment.amount or 0), 2),
             transaction_reference=payment.transaction_reference
         )
         order.payments.append(db_payment)
@@ -64,7 +64,7 @@ def create_credit_note(db: Session, credit_note: CreditNoteCreate):
                 credit_note_id=db_credit_note.id,
                 sku_id=item.sku_id,
                 quantity=item.quantity,
-                unit_price=item.unit_price
+                unit_price=round(float(item.unit_price or 0), 2)
             )
             db.add(db_item)
             if credit_note.restock:
@@ -126,11 +126,11 @@ def list_payments(db: Session, limit: int = 50, offset: int = 0):
         .all()
     )
     daily_totals = [
-        {"date": day.isoformat(), "amount": float(amount or 0)}
+        {"date": day.isoformat(), "amount": round(float(amount or 0), 2)}
         for day, amount in daily_rows
         if day
     ]
-    return items, total, float(total_amount), daily_totals
+    return items, total, round(float(total_amount or 0), 2), daily_totals
 
 def list_credit_notes(db: Session, limit: int = 50, offset: int = 0):
     total = db.query(func.count(CreditNote.id)).scalar() or 0
@@ -155,7 +155,7 @@ def list_credit_notes(db: Session, limit: int = 50, offset: int = 0):
 
     items = []
     for credit_note, amount in rows:
-        setattr(credit_note, "amount", float(amount or 0))
+        setattr(credit_note, "amount", round(float(amount or 0), 2))
         items.append(credit_note)
 
     total_amount = (
@@ -163,4 +163,4 @@ def list_credit_notes(db: Session, limit: int = 50, offset: int = 0):
         .scalar()
         or 0
     )
-    return items, total, float(total_amount)
+    return items, total, round(float(total_amount or 0), 2)

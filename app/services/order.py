@@ -126,8 +126,8 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
                 order_id=db_order.id,
                 sku_id=item.sku_id,
                 quantity=item.quantity,
-                unit_price=item.unit_price,
-                discount_amount=item.discount_amount
+                unit_price=round(float(item.unit_price or 0), 2),
+                discount_amount=round(float(item.discount_amount or 0), 2)
             )
             db.add(db_item)
             db.flush()
@@ -149,7 +149,7 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
                     raise ValueError("Payment amount must be greater than zero")
                 if payment_amount > totals["grand_total"]:
                     raise ValueError("Payment amount exceeds order total")
-                amount = payment_amount
+                amount = round(float(payment_amount), 2)
             db_payment = Account(
                 order_id=db_order.id,
                 amount=amount,
