@@ -145,6 +145,7 @@ class SKUCreate(BaseModel):
     name: str
     brand_id: int
     hsn_code: str
+    distributor_landing_price: Optional[float] = None
     mrp: float
     discount_amount: float
     discount_percent: float
@@ -167,6 +168,7 @@ class SKUResponse(BaseModel):
     name: str
     brand_id: int
     hsn_code: Optional[str]
+    distributor_landing_price: Optional[float]
     mrp: Optional[float]
     discount_amount: Optional[float]
     discount_percent: Optional[float]
@@ -199,11 +201,33 @@ class InventoryResponse(BaseModel):
     sku_id: int
     warehouse_id: int
     total_quantity: float
+    reserved_quantity: float = 0
     earliest_expiry: Optional[date] = None
 
 class InventoryPage(BaseModel):
     items: list[InventoryResponse]
     total: int
+
+class CompanyProfileBase(BaseModel):
+    legal_name: str = "Ascend Foods"
+    gstin: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    invoice_prefix: str = "ASC"
+    invoice_footer: Optional[str] = None
+
+class CompanyProfileUpdate(CompanyProfileBase):
+    pass
+
+class CompanyProfileResponse(CompanyProfileBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    invoice_next_number: int
 
 class UserCreate(BaseModel):
     email: str

@@ -32,10 +32,37 @@ class OrderItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     sku_id: int
+    sku_name: Optional[str] = None
+    hsn_code: Optional[str] = None
     quantity: float
     unit_price: float
     discount_amount: float
+    taxable_value: Optional[float] = None
+    gst_amount: Optional[float] = None
+    line_total: Optional[float] = None
     taxes: list[OrderItemTaxResponse] = []
+
+class PaymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    amount: float
+    transaction_reference: str
+    created_at: Optional[datetime] = None
+
+class CreditNoteItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku_id: int
+    quantity: float
+    unit_price: float
+
+class CreditNoteResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    credit_note_number: str
+    applies_to_outstanding: bool
+    created_at: Optional[datetime] = None
+    items: list[CreditNoteItemResponse] = []
 
 class OrderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -50,6 +77,22 @@ class OrderResponse(BaseModel):
     delivery_driver_id: Optional[int] = None
     payment_status: Optional[str]
     items: list[OrderItemResponse]
+    warehouse_name: Optional[str] = None
+    warehouse_state: Optional[str] = None
+    retailer_name: Optional[str] = None
+    retailer_state: Optional[str] = None
+    retailer_gst_number: Optional[str] = None
+    salesman_name: Optional[str] = None
+    salesman_phone: Optional[int] = None
+    delivery_driver_name: Optional[str] = None
+    total_amount: Optional[float] = None
+    pending_amount: Optional[float] = None
+    taxable_value: Optional[float] = None
+    gst_amount: Optional[float] = None
+    subtotal: Optional[float] = None
+    grand_total: Optional[float] = None
+    payments: list[PaymentResponse] = []
+    credit_notes: list[CreditNoteResponse] = []
     created_at: Optional[datetime] = None
 
 class OrderListResponse(BaseModel):
@@ -67,6 +110,9 @@ class OrderListResponse(BaseModel):
     created_at: Optional[datetime] = None
     total_amount: Optional[float] = None
     pending_amount: Optional[float] = None
+    warehouse_name: Optional[str] = None
+    retailer_name: Optional[str] = None
+    salesman_name: Optional[str] = None
 
 class OrderListPage(BaseModel):
     items: list[OrderListResponse]
@@ -75,6 +121,9 @@ class OrderListPage(BaseModel):
 class StatusUpdate(BaseModel):
     status: str
     delivery_driver_id: Optional[int] = None
+    payment_mode: Optional[str] = None
+    payment_amount: Optional[float] = None
+    payment_status: Optional[str] = None
 
 class InvoiceView(BaseModel):
     model_config = ConfigDict(from_attributes=True)

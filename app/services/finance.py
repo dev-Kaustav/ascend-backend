@@ -17,12 +17,24 @@ def _order_item_tax_amount(item) -> float:
     return _round_money(inclusive_value * (total_rate / 100))
 
 
+def calculate_order_item_totals(item) -> dict:
+    gst_amount = _order_item_tax_amount(item)
+    taxable_value = _order_item_taxable_value(item)
+    line_total = _round_money(max((item.quantity or 0) * (item.unit_price or 0) - (item.discount_amount or 0), 0))
+    return {
+        "taxable_value": taxable_value,
+        "gst_amount": gst_amount,
+        "line_total": line_total,
+    }
+
+
 def calculate_order_totals(order: Order) -> dict:
     taxable_value = 0
     gst_amount = 0
     for item in order.items:
-        taxable_value += _order_item_taxable_value(item)
-        gst_amount += _order_item_tax_amount(item)
+        item_totals = calculate_order_item_totals(item)
+        taxable_value += item_totals["taxable_value"]
+        gst_amount += item_totals["gst_amount"]
     taxable_value = _round_money(taxable_value)
     gst_amount = _round_money(gst_amount)
     grand_total = _round_money(taxable_value + gst_amount)

@@ -25,6 +25,7 @@ from app.models import (
     UserPermission,
     Group,
     GroupPermission,
+    CompanyProfile,
 )
 from app.schemas.admin import (
     BrandCreate,
@@ -35,6 +36,7 @@ from app.schemas.admin import (
     GroupCreate,
     GroupPermissionUpdate,
     UserGroupUpdate,
+    CompanyProfileUpdate,
 )
 from app.models.enums import TransactionType, OrderStatus, EmployeeRole, PaymentStatus
 from app.services.transactions import transactional_session
@@ -79,6 +81,31 @@ def create_sku(db: Session, sku: SKUCreate, current_user=None):
     db.commit()
     db.refresh(db_sku)
     return db_sku
+
+def get_company_profile(db: Session):
+    profile = db.query(CompanyProfile).order_by(CompanyProfile.id.asc()).first()
+    if profile:
+        return profile
+    profile = CompanyProfile(
+        legal_name="Ascend Foods",
+        invoice_prefix="ASC",
+        invoice_next_number=1,
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+def update_company_profile(db: Session, payload: CompanyProfileUpdate):
+    profile = get_company_profile(db)
+    data = payload.model_dump()
+    prefix = (data.get("invoice_prefix") or "ASC").strip().upper()
+    data["invoice_prefix"] = re.sub(r"[^A-Z0-9/-]", "", prefix) or "ASC"
+    for key, value in data.items():
+        setattr(profile, key, value)
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 def add_inventory_receipt(db: Session, receipt: InventoryReceiptCreate):
     with transactional_session(db):
@@ -178,7 +205,8 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
         {
             "sku_id": inventory.sku_id,
             "warehouse_id": inventory.warehouse_id,
-            "total_quantity": inventory.total_quantity,
+            "total_quantity": round(float(inventory.total_quantity or 0), 2),
+            "reserved_quantity": round(float(inventory.reserved_quantity or 0), 2),
             "earliest_expiry": earliest_expiry,
         }
         for inventory, earliest_expiry in rows
@@ -310,6 +338,25 @@ def get_orders_page(
             detailed = detailed_map.get(order.id)
             pending_amount = calculate_order_outstanding(detailed) if detailed else 0
             setattr(order, "pending_amount", float(pending_amount))
+    warehouse_ids = {order.from_entity_id for order in items}
+    retailer_ids = {order.to_entity_id for order in items}
+    salesman_ids = {order.salesman_id for order in items if order.salesman_id}
+    warehouse_map = {
+        warehouse.id: warehouse.name
+        for warehouse in db.query(Warehouse).filter(Warehouse.id.in_(warehouse_ids)).all()
+    } if warehouse_ids else {}
+    retailer_map = {
+        retailer.id: retailer.name
+        for retailer in db.query(Retailer).filter(Retailer.id.in_(retailer_ids)).all()
+    } if retailer_ids else {}
+    salesman_map = {
+        employee.id: employee.name
+        for employee in db.query(Employee).filter(Employee.id.in_(salesman_ids)).all()
+    } if salesman_ids else {}
+    for order in items:
+        setattr(order, "warehouse_name", warehouse_map.get(order.from_entity_id))
+        setattr(order, "retailer_name", retailer_map.get(order.to_entity_id))
+        setattr(order, "salesman_name", salesman_map.get(order.salesman_id))
     return items, total
 
 def _naive_datetime(value: datetime | None) -> datetime | None:
@@ -595,6 +642,7 @@ def list_skus(db: Session):
                 SKU.name,
                 SKU.brand_id,
                 SKU.hsn_code,
+                SKU.distributor_landing_price,
                 SKU.mrp,
                 SKU.discount_amount,
                 SKU.discount_percent,

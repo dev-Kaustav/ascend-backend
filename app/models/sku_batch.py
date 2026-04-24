@@ -13,5 +13,6 @@ class SKUBatch(Base):
     expiry_date = Column(Date)
     quantity_received = Column(Float, nullable=False)
     remaining_quantity = Column(Float, nullable=False)
+    reserved_quantity = Column(Float, default=0, nullable=False)
 
     order_item_batches = relationship("OrderItemBatch", back_populates="batch")

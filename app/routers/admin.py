@@ -34,6 +34,8 @@ from app.services.admin import (
     set_group_permission,
     set_user_group,
     user_has_permission,
+    get_company_profile,
+    update_company_profile,
 )
 from app.services.access_rules import list_access_rules, upsert_access_rule, delete_access_rule
 from app.schemas.admin import (
@@ -57,6 +59,8 @@ from app.schemas.admin import (
     GroupResponse,
     GroupPermissionUpdate,
     UserGroupUpdate,
+    CompanyProfileUpdate,
+    CompanyProfileResponse,
 )
 from app.schemas.order import OrderListPage
 from app.schemas.access_rules import AccessRuleResponse, AccessRuleUpsert
@@ -182,6 +186,18 @@ def export_orders_endpoint(
 @router.get("/summary")
 def get_admin_summary_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
     return get_admin_summary(db)
+
+@router.get("/company-profile", response_model=CompanyProfileResponse)
+def get_company_profile_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    return get_company_profile(db)
+
+@router.patch("/company-profile", response_model=CompanyProfileResponse)
+def update_company_profile_endpoint(
+    payload: CompanyProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    return update_company_profile(db, payload)
 
 @router.get("/orders/status-summary")
 def get_order_status_summary_endpoint(

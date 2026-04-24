@@ -9,6 +9,7 @@ class SKU(Base):
     name = Column(String, nullable=False)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=False)
     hsn_code = Column(String)
+    distributor_landing_price = Column(Float)
     mrp = Column(Float)
     discount_amount = Column(Float, default=0)
     discount_percent = Column(Float, default=0)

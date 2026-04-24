@@ -33,7 +33,7 @@ def create_payment(db: Session, order_id: int, payment: PaymentCreate):
         elif outstanding < order_total:
             order.payment_status = PaymentStatus.PARTIAL
         else:
-            order.payment_status = PaymentStatus.UNPAID
+            order.payment_status = PaymentStatus.CREDIT
     return db_payment
 
 def create_credit_note(db: Session, credit_note: CreditNoteCreate):
@@ -96,7 +96,7 @@ def create_credit_note(db: Session, credit_note: CreditNoteCreate):
         elif outstanding < order_total:
             order.payment_status = PaymentStatus.PARTIAL
         else:
-            order.payment_status = PaymentStatus.UNPAID
+            order.payment_status = PaymentStatus.CREDIT
     return db_credit_note
 
 def get_credit_note_view(db: Session, credit_note_id: int):

@@ -10,6 +10,8 @@ class EmployeeRole(str, Enum):
     BRAND = "BRAND"
 
 class OrderStatus(str, Enum):
+    BOOKED = "BOOKED"
+    READY_TO_SHIP = "READY_TO_SHIP"
     PENDING = "PENDING"
     OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY"
     CONFIRMED = "CONFIRMED"
@@ -27,6 +29,7 @@ class EntityType(str, Enum):
     RETAILER = "RETAILER"
 
 class PaymentStatus(str, Enum):
-    UNPAID = "UNPAID"
+    CREDIT = "CREDIT"
     PARTIAL = "PARTIAL"
     PAID = "PAID"
+    UNPAID = "UNPAID"

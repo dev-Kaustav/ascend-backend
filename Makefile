@@ -13,6 +13,7 @@ dev-logs:
 
 prod:
 	$(COMPOSE_BASE) up --build -d
+	$(COMPOSE_BASE) exec app alembic upgrade head
 
 prod-down:
 	$(COMPOSE_BASE) down
