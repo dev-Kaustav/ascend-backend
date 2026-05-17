@@ -18,7 +18,7 @@ def _create_order_with_item(db, quantity=1):
         from_entity_id=1,
         to_entity_type="RETAILER",
         to_entity_id=1,
-        status=OrderStatus.CONFIRMED
+        status=OrderStatus.DELIVERED
     )
     db.add(order)
     db.flush()

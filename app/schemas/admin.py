@@ -102,6 +102,8 @@ class RetailerCreate(BaseModel):
     pincode: Optional[int]
     gst_number: Optional[str]
     assigned_salesman_id: Optional[int]
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
     @field_validator("mobile_number")
     @classmethod
@@ -139,6 +141,8 @@ class RetailerResponse(BaseModel):
     pincode: Optional[int]
     gst_number: Optional[str]
     assigned_salesman_id: Optional[int]
+    latitude: Optional[float]
+    longitude: Optional[float]
 
 class SKUCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")

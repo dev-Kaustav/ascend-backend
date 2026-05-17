@@ -1,22 +1,54 @@
 from io import BytesIO
 
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from sqlalchemy.orm import Session
 
 from app.models import CompanyProfile
 from app.services.order import get_order_invoice_view
 
+PAGE_WIDTH, PAGE_HEIGHT = A4
+MARGIN = 15 * mm
+
+FONT = "Helvetica"
+FONT_BOLD = "Helvetica-Bold"
+
+STYLE_HEADER = ParagraphStyle("header", fontName=FONT_BOLD, fontSize=14, leading=17)
+STYLE_TITLE = ParagraphStyle("title", fontName=FONT_BOLD, fontSize=16, leading=20, alignment=2)
+STYLE_NORMAL = ParagraphStyle("normal", fontName=FONT, fontSize=8, leading=10)
+STYLE_NORMAL_BOLD = ParagraphStyle("normalBold", fontName=FONT_BOLD, fontSize=8, leading=10)
+STYLE_SMALL = ParagraphStyle("small", fontName=FONT, fontSize=7, leading=9)
+STYLE_LABEL = ParagraphStyle("label", fontName=FONT_BOLD, fontSize=8, leading=10)
+STYLE_TOTAL_LABEL = ParagraphStyle("totalLabel", fontName=FONT_BOLD, fontSize=9, leading=12)
+STYLE_TOTAL_VALUE = ParagraphStyle("totalValue", fontName=FONT_BOLD, fontSize=9, leading=12, alignment=2)
+STYLE_FOOTER = ParagraphStyle("footer", fontName=FONT, fontSize=7, leading=9)
+STYLE_FOOTER_BOLD = ParagraphStyle("footerBold", fontName=FONT_BOLD, fontSize=7, leading=9)
+
+GRID_STYLE = TableStyle([
+    ("GRID", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+    ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.95, 0.95, 0.95)),
+    ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+    ("FONTSIZE", (0, 0), (-1, -1), 7),
+    ("LEADING", (0, 0), (-1, -1), 9),
+    ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+])
+
+
+def _p(text, style=STYLE_NORMAL):
+    return Paragraph(str(text) if text else "", style)
+
 
 def _money(value) -> str:
-    return f"Rs. {float(value or 0):,.2f}"
-
-
-def _text(value) -> str:
-    raw = "" if value is None else str(value)
-    return raw.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-def _line(parts) -> str:
-    return " | ".join(str(part) for part in parts if part not in (None, ""))
+    v = float(value or 0)
+    return f"{v:,.2f}"
 
 
 def _company_profile(db: Session) -> CompanyProfile:
@@ -26,13 +58,233 @@ def _company_profile(db: Session) -> CompanyProfile:
     return CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC", invoice_next_number=1)
 
 
-def _draw_text(commands: list[str], x: int, y: int, text: str, size: int = 9, bold: bool = False):
-    font = "F2" if bold else "F1"
-    commands.append(f"BT /{font} {size} Tf {x} {y} Td ({_text(text)}) Tj ET")
+def _build_header_table(company: CompanyProfile):
+    left_lines = [_p(company.legal_name or "Ascend Foods", STYLE_HEADER)]
+    for line in [
+        company.address_line1,
+        company.address_line2,
+        ", ".join(filter(None, [company.city, company.state, str(company.pincode or "")])),
+        f"GSTIN: {company.gstin}" if company.gstin else None,
+        f"Contact: {company.phone}" if company.phone else None,
+        f"E-Mail: {company.email}" if company.email else None,
+    ]:
+        if line:
+            left_lines.append(_p(line, STYLE_SMALL))
+
+    right = _p("TAX INVOICE", STYLE_TITLE)
+    content_width = PAGE_WIDTH - 2 * MARGIN
+
+    tbl = Table(
+        [[left_lines, right]],
+        colWidths=[content_width * 0.65, content_width * 0.35],
+    )
+    tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tbl
 
 
-def _draw_rule(commands: list[str], x1: int, y: int, x2: int):
-    commands.append(f"{x1} {y} m {x2} {y} l S")
+def _build_order_info_table(order, invoice_date):
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    data = [
+        [
+            _p(f"Order Date: {invoice_date}", STYLE_NORMAL),
+            _p(f"Order ID: {order.get('id', '')}", STYLE_NORMAL),
+        ],
+        [
+            _p(f"Salesman Name: <b>{order.get('salesman_name') or '-'}</b>", STYLE_NORMAL),
+            _p(f"Payment Mode: <b>{order.get('payment_status') or 'CREDIT'}</b>", STYLE_NORMAL),
+        ],
+        [
+            _p(f"INVOICE NUMBER: <b>{order.get('invoice_number') or '-'}</b>", STYLE_NORMAL),
+            _p(""),
+        ],
+    ]
+    tbl = Table(data, colWidths=[content_width * 0.5, content_width * 0.5])
+    tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tbl
+
+
+def _build_address_table(order):
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    retailer_name = order.get("retailer_name") or f"Retailer {order.get('to_entity_id', '')}"
+    addr_parts = filter(None, [
+        order.get("retailer_address_line1"),
+        ", ".join(filter(None, [order.get("retailer_city"), order.get("retailer_state")])),
+        f"Pincode: {order.get('retailer_pincode')}" if order.get("retailer_pincode") else None,
+    ])
+
+    def _addr_block(heading):
+        lines = [_p(f"<b>{heading}</b>", STYLE_LABEL), _p(f"<b>{retailer_name}</b>", STYLE_NORMAL_BOLD)]
+        for part in filter(None, [
+            order.get("retailer_address_line1"),
+            ", ".join(filter(None, [order.get("retailer_city"), order.get("retailer_state")])),
+            f"Pincode: {order.get('retailer_pincode')}" if order.get("retailer_pincode") else None,
+            f"GSTIN: {order.get('retailer_gst_number')}" if order.get("retailer_gst_number") else None,
+        ]):
+            lines.append(_p(part, STYLE_SMALL))
+        return lines
+
+    data = [[_addr_block("Bill To:"), _addr_block("Ship To:")]]
+    tbl = Table(data, colWidths=[content_width * 0.5, content_width * 0.5])
+    tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("LINEBEFORE", (1, 0), (1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tbl
+
+
+def _extract_taxes(item):
+    taxes = item.get("taxes", [])
+    sgst_pct = sgst_amt = cgst_pct = cgst_amt = igst_pct = igst_amt = 0.0
+    for tax in taxes:
+        tt = (tax.get("tax_type") or "").upper()
+        rate = float(tax.get("rate") or 0)
+        taxable = float(item.get("taxable_value") or 0)
+        amt = round(taxable * rate / 100, 2)
+        if tt == "SGST":
+            sgst_pct = rate
+            sgst_amt = amt
+        elif tt == "CGST":
+            cgst_pct = rate
+            cgst_amt = amt
+        elif tt == "IGST":
+            igst_pct = rate
+            igst_amt = amt
+    return sgst_pct, sgst_amt, cgst_pct, cgst_amt, igst_pct, igst_amt
+
+
+def _build_items_table(items):
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    col_widths = [
+        20, content_width * 0.18, 48, 28, 42, 38, 48, 32, 38, 32, 38, 48
+    ]
+
+    header = ["Sr.", "Item Description", "HSN", "Qty", "MRP", "Disc", "Rate",
+              "SGST %", "SGST", "CGST %", "CGST", "Amount"]
+    data = [header]
+
+    total_discount = 0.0
+    total_sgst = 0.0
+    total_cgst = 0.0
+
+    for i, item in enumerate(items, 1):
+        sgst_pct, sgst_amt, cgst_pct, cgst_amt, igst_pct, igst_amt = _extract_taxes(item)
+        qty = float(item.get("quantity") or 0)
+        unit_price = float(item.get("unit_price") or 0)
+        discount = float(item.get("discount_amount") or 0)
+        taxable = float(item.get("taxable_value") or 0)
+        line_total = float(item.get("line_total") or 0)
+
+        total_discount += discount * qty if discount else 0
+        total_sgst += sgst_amt
+        total_cgst += cgst_amt
+
+        disc_str = f"{_money(discount)}({0}%)" if discount else "0(0%)"
+        rate = _money(taxable)
+
+        data.append([
+            str(i),
+            _p(item.get("sku_name") or f"SKU {item.get('sku_id')}", STYLE_SMALL),
+            item.get("hsn_code") or "-",
+            str(int(qty)) if qty == int(qty) else _money(qty),
+            _money(unit_price),
+            disc_str,
+            rate,
+            f"{sgst_pct:.2f}" if sgst_pct else "-",
+            _money(sgst_amt) if sgst_amt else "-",
+            f"{cgst_pct:.2f}" if cgst_pct else "-",
+            _money(cgst_amt) if cgst_amt else "-",
+            _money(line_total),
+        ])
+
+    tbl = Table(data, colWidths=col_widths, repeatRows=1)
+    style = TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.93, 0.93, 0.93)),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("LEADING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),
+    ])
+    tbl.setStyle(style)
+    return tbl, total_discount, total_sgst, total_cgst
+
+
+def _build_totals_table(invoice, order, total_discount, total_sgst, total_cgst):
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    sub_total = float(invoice.get("taxable_value") or 0)
+    grand_total = float(invoice.get("grand_total") or 0)
+
+    rows = [
+        ["Sub Total", _money(sub_total)],
+        ["Items Discount", _money(total_discount)],
+        ["SGST", _money(total_sgst)],
+        ["CGST", _money(total_cgst)],
+        ["Total", f"Rs. {_money(grand_total)}"],
+    ]
+
+    tbl = Table(rows, colWidths=[content_width * 0.35, content_width * 0.15])
+    tbl.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("FONTNAME", (0, -1), (-1, -1), FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("LEADING", (0, 0), (-1, -1), 11),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+    ]))
+    return tbl
+
+
+def _build_footer_table(order, company):
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    inv = order.get("invoice_number") or ""
+    company_name = company.legal_name or "Ascend Foods"
+    left = _p(f"<b>{inv}</b> ({company_name})", STYLE_FOOTER_BOLD)
+    right_lines = [
+        _p(company_name, STYLE_FOOTER),
+        Spacer(1, 20),
+        _p("Authorized Signatory", STYLE_FOOTER),
+    ]
+    tbl = Table([[left, right_lines]], colWidths=[content_width * 0.6, content_width * 0.4])
+    tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("VALIGN", (0, 0), (0, -1), "MIDDLE"),
+        ("VALIGN", (1, 0), (1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tbl
 
 
 def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
@@ -41,100 +293,55 @@ def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
     company = _company_profile(db)
     filename = f"{order.get('invoice_number') or f'order-{order_id}'}.pdf"
 
-    commands = ["0.7 w"]
-    y = 800
-    _draw_text(commands, 40, y, company.legal_name or "Ascend Foods", 18, True)
-    _draw_text(commands, 440, y, "TAX INVOICE", 16, True)
-    y -= 18
-    _draw_text(commands, 40, y, _line([company.address_line1, company.address_line2]), 8)
-    y -= 12
-    _draw_text(commands, 40, y, _line([company.city, company.state, company.pincode]), 8)
-    y -= 12
-    _draw_text(commands, 40, y, _line([f"GSTIN: {company.gstin}" if company.gstin else None, company.phone, company.email]), 8)
-    _draw_rule(commands, 40, y - 14, 555)
+    created_at = order.get("created_at")
+    if created_at:
+        try:
+            invoice_date = created_at.strftime("%B %d, %Y")
+        except AttributeError:
+            invoice_date = str(created_at)[:10]
+    else:
+        invoice_date = ""
 
-    y -= 42
-    _draw_text(commands, 40, y, "Bill To", 10, True)
-    _draw_text(commands, 320, y, "Invoice Details", 10, True)
-    y -= 16
-    _draw_text(commands, 40, y, order.get("retailer_name") or f"Retailer {order.get('to_entity_id')}", 9, True)
-    _draw_text(commands, 320, y, f"Invoice No: {order.get('invoice_number') or '-'}", 9)
-    y -= 13
-    _draw_text(commands, 40, y, _line([order.get("retailer_state"), f"GSTIN: {order.get('retailer_gst_number')}" if order.get("retailer_gst_number") else None]), 8)
-    _draw_text(commands, 320, y, f"Order No: {order.get('id')}", 9)
-    y -= 13
-    _draw_text(commands, 40, y, f"Warehouse: {order.get('warehouse_name') or '-'}", 8)
-    _draw_text(commands, 320, y, f"Status: {order.get('status')}", 9)
-    y -= 13
-    _draw_text(commands, 40, y, f"Warehouse State: {order.get('warehouse_state') or '-'}", 8)
-    _draw_text(commands, 320, y, f"Payment: {order.get('payment_status')}", 9)
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=MARGIN,
+        bottomMargin=MARGIN,
+    )
 
-    y -= 30
-    _draw_rule(commands, 40, y + 16, 555)
-    headers = [("SKU", 42), ("HSN", 210), ("Qty", 270), ("MRP", 315), ("Disc", 370), ("Taxable", 425), ("GST", 485), ("Total", 525)]
-    for label, x in headers:
-        _draw_text(commands, x, y, label, 8, True)
-    _draw_rule(commands, 40, y - 8, 555)
-    y -= 24
-    for item in order.get("items", []):
-        taxes = ", ".join(f"{tax.get('tax_type')} {tax.get('rate'):.2f}%" for tax in item.get("taxes", []))
-        name = (item.get("sku_name") or f"SKU {item.get('sku_id')}")[:28]
-        _draw_text(commands, 42, y, name, 8)
-        _draw_text(commands, 210, y, item.get("hsn_code") or "-", 8)
-        _draw_text(commands, 270, y, f"{float(item.get('quantity') or 0):.2f}", 8)
-        _draw_text(commands, 315, y, _money(item.get("unit_price")), 8)
-        _draw_text(commands, 370, y, _money(item.get("discount_amount")), 8)
-        _draw_text(commands, 425, y, _money(item.get("taxable_value")), 8)
-        _draw_text(commands, 485, y, _money(item.get("gst_amount")), 8)
-        _draw_text(commands, 525, y, _money(item.get("line_total")), 8)
-        y -= 16
-        if taxes:
-            _draw_text(commands, 42, y, taxes, 7)
-            y -= 12
-        if y < 160:
-            break
+    elements = []
 
-    y = max(y - 10, 150)
-    _draw_rule(commands, 320, y + 12, 555)
-    summary = [
-        ("Taxable Value", invoice.get("taxable_value")),
-        ("GST", invoice.get("gst_amount")),
-        ("Invoice Total", invoice.get("grand_total")),
-        ("Payment Pending", order.get("pending_amount")),
-    ]
-    for label, value in summary:
-        _draw_text(commands, 360, y, label, 9, label == "Invoice Total")
-        _draw_text(commands, 485, y, _money(value), 9, label == "Invoice Total")
-        y -= 16
+    elements.append(_build_header_table(company))
+    elements.append(Spacer(1, 2 * mm))
+    elements.append(_build_order_info_table(order, invoice_date))
+    elements.append(Spacer(1, 2 * mm))
+    elements.append(_build_address_table(order))
+    elements.append(Spacer(1, 3 * mm))
 
-    footer = company.invoice_footer or "This is a computer generated invoice."
-    _draw_rule(commands, 40, 86, 555)
-    _draw_text(commands, 40, 66, footer, 8)
-    _draw_text(commands, 420, 66, f"For {company.legal_name or 'Ascend Foods'}", 8, True)
+    items = order.get("items", [])
+    items_tbl, total_discount, total_sgst, total_cgst = _build_items_table(items)
+    elements.append(items_tbl)
+    elements.append(Spacer(1, 2 * mm))
 
-    content = "\n".join(commands).encode("latin-1", errors="replace")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
-        f"<< /Length {len(content)} >>\nstream\n".encode("ascii") + content + b"\nendstream",
-    ]
+    totals_tbl = _build_totals_table(invoice, order, total_discount, total_sgst, total_cgst)
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    wrapper = Table(
+        [["", totals_tbl]],
+        colWidths=[content_width * 0.5, content_width * 0.5],
+    )
+    wrapper.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    elements.append(wrapper)
 
-    pdf = BytesIO()
-    pdf.write(b"%PDF-1.4\n")
-    offsets = [0]
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(pdf.tell())
-        pdf.write(f"{index} 0 obj\n".encode("ascii"))
-        pdf.write(obj)
-        pdf.write(b"\nendobj\n")
-    xref_at = pdf.tell()
-    pdf.write(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
-    pdf.write(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        pdf.write(f"{offset:010d} 00000 n \n".encode("ascii"))
-    pdf.write(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF".encode("ascii"))
-    pdf.seek(0)
-    return pdf, filename
+    elements.append(Spacer(1, 4 * mm))
+    elements.append(_build_footer_table(order, company))
+
+    footer_text = company.invoice_footer or "This is a computer generated invoice."
+    elements.append(Spacer(1, 2 * mm))
+    elements.append(_p(footer_text, STYLE_FOOTER))
+
+    doc.build(elements)
+    buf.seek(0)
+    return buf, filename

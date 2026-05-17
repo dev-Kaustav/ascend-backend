@@ -5,6 +5,23 @@ from datetime import datetime
 class PaymentCreate(BaseModel):
     amount: float
     transaction_reference: str
+    payment_mode: Optional[str] = None
+    collected_by_id: Optional[int] = None
+    collection_date: Optional[str] = None
+    cheque_number: Optional[str] = None
+    cheque_name: Optional[str] = None
+
+class PaymentLine(BaseModel):
+    amount: float
+    payment_mode: str
+    cheque_number: Optional[str] = None
+    cheque_name: Optional[str] = None
+
+class MultiPaymentCreate(BaseModel):
+    order_id: int
+    collected_by_id: Optional[int] = None
+    collection_date: Optional[str] = None
+    payments: list[PaymentLine]
 
 class PaymentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -12,6 +29,11 @@ class PaymentResponse(BaseModel):
     order_id: int
     amount: float
     transaction_reference: str
+    payment_mode: Optional[str] = None
+    collected_by_id: Optional[int] = None
+    collection_date: Optional[datetime] = None
+    cheque_number: Optional[str] = None
+    cheque_name: Optional[str] = None
     created_at: Optional[datetime] = None
 
 class PaymentDailyTotal(BaseModel):

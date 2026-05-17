@@ -10,11 +10,9 @@ class EmployeeRole(str, Enum):
     BRAND = "BRAND"
 
 class OrderStatus(str, Enum):
-    BOOKED = "BOOKED"
-    READY_TO_SHIP = "READY_TO_SHIP"
     PENDING = "PENDING"
+    READY_TO_SHIP = "READY_TO_SHIP"
     OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY"
-    CONFIRMED = "CONFIRMED"
     DELIVERED = "DELIVERED"
     RETURNED = "RETURNED"
     CANCELLED = "CANCELLED"
@@ -33,3 +31,19 @@ class PaymentStatus(str, Enum):
     PARTIAL = "PARTIAL"
     PAID = "PAID"
     UNPAID = "UNPAID"
+
+class PaymentMode(str, Enum):
+    CASH = "CASH"
+    UPI = "UPI"
+    CHEQUE = "CHEQUE"
+    ONLINE = "ONLINE"
+
+class IssueCategory(str, Enum):
+    STOCK_SHORTAGE = "STOCK_SHORTAGE"
+    EXPIRY = "EXPIRY"
+    RETURN = "RETURN"
+    GST_ISSUE = "GST_ISSUE"
+    SALESMAN_ISSUE = "SALESMAN_ISSUE"
+    LOW_AMOUNT = "LOW_AMOUNT"
+    SHOP_CLOSED = "SHOP_CLOSED"
+    OTHER = "OTHER"

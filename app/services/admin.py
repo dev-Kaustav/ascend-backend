@@ -114,7 +114,7 @@ def add_inventory_receipt(db: Session, receipt: InventoryReceiptCreate):
             from_entity_id=receipt.brand_id,
             to_entity_type="WAREHOUSE",
             to_entity_id=receipt.warehouse_id,
-            status=OrderStatus.CONFIRMED
+            status=OrderStatus.DELIVERED
         )
         db.add(db_order)
         db.flush()
@@ -289,8 +289,9 @@ def get_orders_page(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
+    base_query=None,
 ):
-    query = _outgoing_orders_query(db)
+    query = base_query if base_query is not None else _outgoing_orders_query(db)
     query = _apply_order_filters(
         query,
         status=status,
@@ -506,30 +507,45 @@ def export_orders_excel(
     output.seek(0)
     return output
 
-def get_admin_summary(db: Session):
-    orders_count = _outgoing_orders_query(db).count()
+def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | None = None):
+    from_dt = _parse_date(from_date, False)
+    to_dt = _parse_date(to_date, True)
 
-    payment_rows = (
+    def _apply_date(q):
+        if from_dt:
+            q = q.filter(Order.created_at >= from_dt)
+        if to_dt:
+            q = q.filter(Order.created_at < to_dt)
+        return q
+
+    base_outgoing = db.query(Order).filter(
+        Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER"
+    )
+    orders_count = _apply_date(base_outgoing).count()
+
+    payment_rows = _apply_date(
         db.query(Order.payment_status, func.count(Order.id))
         .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-        .group_by(Order.payment_status)
-        .all()
-    )
+    ).group_by(Order.payment_status).all()
     payment_status = {row[0].value if hasattr(row[0], "value") else row[0]: row[1] for row in payment_rows}
 
     base_sub, tax_sub = _totals_subqueries(db)
     total_expr = func.coalesce(base_sub.c.base_total, 0)
-    outgoing_total = (
+
+    revenue_q = (
         db.query(func.coalesce(func.sum(total_expr), 0))
         .select_from(Order)
         .outerjoin(base_sub, base_sub.c.order_id == Order.id)
         .outerjoin(tax_sub, tax_sub.c.order_id == Order.id)
         .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-        .scalar()
-        or 0
     )
-    outgoing_total = round(float(outgoing_total or 0), 2)
-    outstanding_total = (
+    if from_dt:
+        revenue_q = revenue_q.filter(Order.created_at >= from_dt)
+    if to_dt:
+        revenue_q = revenue_q.filter(Order.created_at < to_dt)
+    outgoing_total = round(float(revenue_q.scalar() or 0), 2)
+
+    outstanding_q = (
         db.query(func.coalesce(func.sum(total_expr), 0))
         .select_from(Order)
         .outerjoin(base_sub, base_sub.c.order_id == Order.id)
@@ -539,19 +555,27 @@ def get_admin_summary(db: Session):
             Order.to_entity_type == "RETAILER",
             Order.payment_status != PaymentStatus.PAID,
         )
-        .scalar()
-        or 0
     )
-    outstanding_total = round(float(outstanding_total or 0), 2)
+    if from_dt:
+        outstanding_q = outstanding_q.filter(Order.created_at >= from_dt)
+    if to_dt:
+        outstanding_q = outstanding_q.filter(Order.created_at < to_dt)
+    outstanding_total = round(float(outstanding_q.scalar() or 0), 2)
 
-    since = datetime.utcnow() - timedelta(days=30)
-    timeline_rows = (
+    # Timeline: use date range if given, else last 30 days
+    timeline_since = from_dt if from_dt else (datetime.utcnow() - timedelta(days=30))
+    timeline_q = (
         db.query(func.date(Order.created_at), func.count(Order.id))
         .filter(
-            Order.created_at >= since,
+            Order.created_at >= timeline_since,
             Order.from_entity_type == "WAREHOUSE",
             Order.to_entity_type == "RETAILER",
         )
+    )
+    if to_dt:
+        timeline_q = timeline_q.filter(Order.created_at < to_dt)
+    timeline_rows = (
+        timeline_q
         .group_by(func.date(Order.created_at))
         .order_by(func.date(Order.created_at))
         .all()
@@ -563,12 +587,15 @@ def get_admin_summary(db: Session):
     ]
 
     warehouse_map = {w.id: w.name for w in db.query(Warehouse).all()}
-    sales_rows = (
+    sales_q = (
         db.query(Order.from_entity_id, func.count(Order.id))
         .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-        .group_by(Order.from_entity_id)
-        .all()
     )
+    if from_dt:
+        sales_q = sales_q.filter(Order.created_at >= from_dt)
+    if to_dt:
+        sales_q = sales_q.filter(Order.created_at < to_dt)
+    sales_rows = sales_q.group_by(Order.from_entity_id).all()
     sales_by_warehouse = [
         {
             "warehouse_id": warehouse_id,
@@ -578,6 +605,7 @@ def get_admin_summary(db: Session):
         for warehouse_id, count in sales_rows
     ]
 
+    # Inventory stats are current state — not date-filtered
     inventory_rows = (
         db.query(Inventory.warehouse_id, func.sum(Inventory.total_quantity))
         .group_by(Inventory.warehouse_id)
@@ -667,13 +695,18 @@ def list_skus(db: Session):
 def list_warehouses(db: Session):
     return db.query(Warehouse).order_by(Warehouse.name.asc()).all()
 
-def get_order_status_summary(db: Session):
-    rows = (
+def get_order_status_summary(db: Session, from_date: str | None = None, to_date: str | None = None):
+    from_dt = _parse_date(from_date, False)
+    to_dt = _parse_date(to_date, True)
+    q = (
         db.query(Order.status, func.count(Order.id))
         .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-        .group_by(Order.status)
-        .all()
     )
+    if from_dt:
+        q = q.filter(Order.created_at >= from_dt)
+    if to_dt:
+        q = q.filter(Order.created_at < to_dt)
+    rows = q.group_by(Order.status).all()
     summary = {}
     for status, count in rows:
         key = status.value if hasattr(status, "value") else status

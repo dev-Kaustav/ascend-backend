@@ -7,6 +7,8 @@ from app.models import (
     OrderItem,
     OrderItemBatch,
     OrderItemTax,
+    OrderTrail,
+    Beat,
     SKUBatch,
     Inventory,
     InventoryTransaction,
@@ -17,8 +19,9 @@ from app.models import (
     Warehouse,
     CompanyProfile,
 )
+from app.models.user import User
 from app.schemas.order import OrderCreate, StatusUpdate
-from app.models.enums import OrderStatus, TransactionType, PaymentStatus
+from app.models.enums import OrderStatus, TransactionType, PaymentStatus, PaymentMode
 from app.services.finance import calculate_order_item_totals, calculate_order_outstanding, calculate_order_totals
 from app.services.transactions import transactional_session
 from app.core.deps import get_role_value
@@ -30,6 +33,36 @@ class InsufficientStockError(Exception):
 
 class RetailerAccessError(Exception):
     pass
+
+
+class StatusTransitionForbiddenError(Exception):
+    pass
+
+
+_STATUS_ROLE_MAP = {
+    OrderStatus.READY_TO_SHIP:      {"WAREHOUSE_MANAGER"},
+    OrderStatus.OUT_FOR_DELIVERY:   {"DRIVER"},
+    OrderStatus.DELIVERED:          {"DRIVER"},
+    OrderStatus.RETURNED:           {"WAREHOUSE_MANAGER"},
+    OrderStatus.CANCELLED:          {"ADMIN", "RETAILER"},
+}
+
+
+def _check_role_for_transition(current_user, next_status: OrderStatus, order: "Order"):
+    role = get_role_value(current_user)
+    if role == "ADMIN":
+        return
+    if role == "RETAILER":
+        if next_status != OrderStatus.CANCELLED:
+            raise StatusTransitionForbiddenError("Retailer can only cancel orders")
+        if not getattr(current_user, "retailer_id", None) or current_user.retailer_id != order.to_entity_id:
+            raise StatusTransitionForbiddenError("Order does not belong to your account")
+        return
+    allowed_roles = _STATUS_ROLE_MAP.get(next_status, set())
+    if role not in allowed_roles:
+        raise StatusTransitionForbiddenError(
+            f"Role {role} cannot set status {next_status.value}"
+        )
 
 def _is_outgoing_order(order: Order) -> bool:
     return order.from_entity_type == "WAREHOUSE" and order.to_entity_type == "RETAILER"
@@ -222,10 +255,14 @@ def _record_payment(db: Session, order: Order, payment_mode: str | None, payment
         raise ValueError("Payment amount must be greater than zero")
     if amount > outstanding_before:
         raise ValueError("Payment amount exceeds order total")
+    payment_mode_enum = None
+    if mode in {m.value for m in PaymentMode}:
+        payment_mode_enum = PaymentMode(mode)
     db_payment = Account(
         order_id=order.id,
         amount=amount,
-        transaction_reference=f"{mode}-{order.id}-{len(order.payments) + 1}-{int(datetime.utcnow().timestamp())}"
+        transaction_reference=f"{mode}-{order.id}-{len(order.payments) + 1}-{int(datetime.utcnow().timestamp())}",
+        payment_mode=payment_mode_enum,
     )
     db.add(db_payment)
     order.payments.append(db_payment)
@@ -236,6 +273,20 @@ def _record_payment(db: Session, order: Order, payment_mode: str | None, payment
         order.payment_status = PaymentStatus.PARTIAL
     else:
         order.payment_status = PaymentStatus.CREDIT
+
+def _build_trail_description(order: Order, next_status: OrderStatus) -> str:
+    if next_status == OrderStatus.READY_TO_SHIP:
+        return "Marked ready to ship"
+    if next_status == OrderStatus.OUT_FOR_DELIVERY:
+        return "Out for delivery"
+    if next_status == OrderStatus.DELIVERED:
+        return "Delivered"
+    if next_status == OrderStatus.RETURNED:
+        return "Returned"
+    if next_status == OrderStatus.CANCELLED:
+        return "Cancelled"
+    return f"Status changed to {next_status.value}"
+
 
 def create_outgoing_order(db: Session, order: OrderCreate, current_user):
     role_value = get_role_value(current_user)
@@ -274,7 +325,7 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
             to_entity_type="RETAILER",
             to_entity_id=order.retailer_id,
             salesman_id=salesman_id,
-            status=OrderStatus.BOOKED,
+            status=OrderStatus.PENDING,
             payment_status=PaymentStatus.CREDIT,
             created_at=created_at_override,
         )
@@ -302,21 +353,26 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
                 )
                 db.add(db_tax)
 
+        db.add(OrderTrail(
+            order_id=db_order.id,
+            order_status=OrderStatus.PENDING,
+            description="Order created",
+            changed_by_id=getattr(current_user, "id", None),
+        ))
+
         if _is_outgoing_order(db_order):
             _reserve_inventory_for_order(db, db_order)
         _record_payment(db, db_order, payment_mode, payment_amount)
     return db_order
 
-def update_order_status(db: Session, order_id: int, status: StatusUpdate):
+def update_order_status(db: Session, order_id: int, status: StatusUpdate, current_user=None):
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise ValueError("Order not found")
     next_status = status.status
     allowed_transitions = {
-        OrderStatus.BOOKED: {OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED},
+        OrderStatus.PENDING: {OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED},
         OrderStatus.READY_TO_SHIP: {OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED},
-        OrderStatus.PENDING: {OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED},
-        OrderStatus.CONFIRMED: {OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED},
         OrderStatus.OUT_FOR_DELIVERY: {OrderStatus.DELIVERED, OrderStatus.RETURNED, OrderStatus.CANCELLED},
         OrderStatus.DELIVERED: {OrderStatus.RETURNED},
         OrderStatus.RETURNED: set(),
@@ -331,19 +387,41 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate):
     if next_status not in allowed_transitions.get(order.status, set()):
         raise ValueError("Invalid status transition")
 
+    if current_user is not None:
+        _check_role_for_transition(current_user, next_status, order)
+
     if status.delivery_driver_id:
         driver = db.query(Employee).filter(Employee.id == status.delivery_driver_id).first()
         if not driver or get_role_value(driver) != "DRIVER":
             raise ValueError("Invalid delivery driver")
         order.delivery_driver_id = status.delivery_driver_id
 
+    if status.delivery_date:
+        try:
+            order.delivery_date = datetime.fromisoformat(status.delivery_date)
+        except ValueError:
+            try:
+                order.delivery_date = datetime.combine(date.fromisoformat(status.delivery_date), dtime.min)
+            except ValueError:
+                pass
+    if status.panel_status is not None:
+        order.panel_status = status.panel_status
+    if status.issue_category is not None:
+        from app.models.enums import IssueCategory
+        try:
+            order.issue_category = IssueCategory(status.issue_category)
+        except ValueError:
+            pass
+    if status.description is not None:
+        order.description = status.description
+
     previous_status = order.status
 
     if next_status == OrderStatus.READY_TO_SHIP:
+        if not order.delivery_driver_id:
+            raise ValueError("Delivery driver is required before marking ready to ship")
         order.status = OrderStatus.READY_TO_SHIP
     elif next_status == OrderStatus.OUT_FOR_DELIVERY:
-        if not order.delivery_driver_id:
-            raise ValueError("Delivery driver is required before dispatch")
         order.status = OrderStatus.OUT_FOR_DELIVERY
         _dispatch_reserved_inventory(db, order)
     elif next_status == OrderStatus.DELIVERED:
@@ -361,16 +439,26 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate):
             _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
     elif next_status in {OrderStatus.CANCELLED, OrderStatus.RETURNED}:
         order.status = next_status
-        if previous_status in {OrderStatus.BOOKED, OrderStatus.READY_TO_SHIP, OrderStatus.PENDING, OrderStatus.CONFIRMED}:
+        if previous_status in {OrderStatus.PENDING, OrderStatus.READY_TO_SHIP}:
             _release_reserved_inventory(db, order)
         else:
             _restore_dispatched_inventory(db, order)
+
+    trail_description = status.description or _build_trail_description(order, next_status)
+    db.add(OrderTrail(
+        order_id=order.id,
+        order_status=next_status,
+        description=trail_description,
+        changed_by_id=getattr(current_user, "id", None) if current_user else None,
+    ))
+
     db.commit()
     return order
 
 def _serialize_order(db: Session, order: Order) -> dict:
     warehouse = db.query(Warehouse).filter(Warehouse.id == order.from_entity_id).first()
     retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
+    beat = db.query(Beat).filter(Beat.id == order.beat_id).first() if order.beat_id else None
     salesman = db.query(Employee).filter(Employee.id == order.salesman_id).first() if order.salesman_id else None
     driver = db.query(Employee).filter(Employee.id == order.delivery_driver_id).first() if order.delivery_driver_id else None
     sku_ids = [item.sku_id for item in order.items]
@@ -405,6 +493,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
             "id": payment.id,
             "amount": _round_money(payment.amount),
             "transaction_reference": payment.transaction_reference,
+            "payment_mode": payment.payment_mode.value if hasattr(payment.payment_mode, "value") else payment.payment_mode,
             "created_at": payment.created_at,
         }
         for payment in order.payments
@@ -427,6 +516,23 @@ def _serialize_order(db: Session, order: Order) -> dict:
         }
         for note in order.credit_notes
     ]
+    trail_user_ids = {t.changed_by_id for t in order.trails if t.changed_by_id}
+    trail_user_map = {}
+    if trail_user_ids:
+        users = db.query(User).filter(User.id.in_(trail_user_ids)).all()
+        for u in users:
+            emp = db.query(Employee).filter(Employee.id == u.employee_id).first() if u.employee_id else None
+            trail_user_map[u.id] = emp.name if emp else u.email
+    trails = [
+        {
+            "id": t.id,
+            "order_status": t.order_status.value if hasattr(t.order_status, "value") else t.order_status,
+            "description": t.description,
+            "changed_by_name": trail_user_map.get(t.changed_by_id),
+            "created_at": t.created_at,
+        }
+        for t in order.trails
+    ]
     return {
         "id": order.id,
         "from_entity_type": order.from_entity_type,
@@ -435,14 +541,23 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "to_entity_id": order.to_entity_id,
         "status": order.status.value if hasattr(order.status, "value") else order.status,
         "invoice_number": order.invoice_number,
+        "beat_id": order.beat_id,
+        "beat_name": beat.name if beat else None,
         "salesman_id": order.salesman_id,
         "delivery_driver_id": order.delivery_driver_id,
+        "delivery_date": order.delivery_date,
+        "panel_status": order.panel_status,
+        "issue_category": order.issue_category.value if hasattr(order.issue_category, "value") and order.issue_category else order.issue_category,
+        "description": order.description,
         "payment_status": order.payment_status.value if hasattr(order.payment_status, "value") else order.payment_status,
         "items": items,
         "warehouse_name": warehouse.name if warehouse else None,
         "warehouse_state": warehouse.state if warehouse else None,
         "retailer_name": retailer.name if retailer else None,
+        "retailer_address_line1": retailer.address_line1 if retailer else None,
+        "retailer_city": retailer.city if retailer else None,
         "retailer_state": retailer.state if retailer else None,
+        "retailer_pincode": retailer.pincode if retailer else None,
         "retailer_gst_number": retailer.gst_number if retailer else None,
         "salesman_name": salesman.name if salesman else None,
         "salesman_phone": salesman.phone_number if salesman else None,
@@ -455,6 +570,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "grand_total": totals["grand_total"],
         "payments": payments,
         "credit_notes": credit_notes,
+        "trails": trails,
         "created_at": order.created_at,
     }
 

@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--email", required=True, help="User email")
     parser.add_argument("--password", required=True, help="User password")
     parser.add_argument("--role", default="ADMIN", help="Role (default: ADMIN)")
+    parser.add_argument("--phone", type=int, default=0, help="Phone number (default: 0)")
     parser.add_argument("--employee-id", type=int, dest="employee_id", help="Optional employee id")
     parser.add_argument(
         "--group-id",
@@ -49,6 +50,7 @@ def main():
             password=args.password,
             role=args.role,
             employee_id=args.employee_id,
+            phone_number=args.phone,
             is_active=not args.inactive,
             group_id=args.group_id,
         )

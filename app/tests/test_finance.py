@@ -17,7 +17,7 @@ def test_order_totals_treat_gst_as_included_in_discounted_mrp(db):
         from_entity_id=1,
         to_entity_type="RETAILER",
         to_entity_id=1,
-        status=OrderStatus.CONFIRMED,
+        status=OrderStatus.DELIVERED,
     )
     db.add(order)
     db.flush()

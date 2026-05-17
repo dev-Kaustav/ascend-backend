@@ -4,6 +4,7 @@ COMPOSE_BASE = docker compose -f docker-compose.yml
 
 dev:
 	$(COMPOSE_BASE) up --build -d
+	$(COMPOSE_BASE) exec app alembic upgrade head
 
 dev-down:
 	$(COMPOSE_BASE) down

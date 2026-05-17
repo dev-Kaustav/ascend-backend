@@ -21,6 +21,10 @@ class OrderCreate(BaseModel):
     payment_amount: Optional[float] = None
     salesman_id: Optional[int] = None
     order_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    panel_status: Optional[str] = None
+    issue_category: Optional[str] = None
+    description: Optional[str] = None
 
 class OrderItemTaxResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -47,6 +51,7 @@ class PaymentResponse(BaseModel):
     id: int
     amount: float
     transaction_reference: str
+    payment_mode: Optional[str] = None
     created_at: Optional[datetime] = None
 
 class CreditNoteItemResponse(BaseModel):
@@ -75,12 +80,19 @@ class OrderResponse(BaseModel):
     invoice_number: Optional[str]
     salesman_id: Optional[int]
     delivery_driver_id: Optional[int] = None
+    delivery_date: Optional[datetime] = None
+    panel_status: Optional[str] = None
+    issue_category: Optional[str] = None
+    description: Optional[str] = None
     payment_status: Optional[str]
     items: list[OrderItemResponse]
     warehouse_name: Optional[str] = None
     warehouse_state: Optional[str] = None
     retailer_name: Optional[str] = None
+    retailer_address_line1: Optional[str] = None
+    retailer_city: Optional[str] = None
     retailer_state: Optional[str] = None
+    retailer_pincode: Optional[int] = None
     retailer_gst_number: Optional[str] = None
     salesman_name: Optional[str] = None
     salesman_phone: Optional[int] = None
@@ -124,6 +136,10 @@ class StatusUpdate(BaseModel):
     payment_mode: Optional[str] = None
     payment_amount: Optional[float] = None
     payment_status: Optional[str] = None
+    delivery_date: Optional[str] = None
+    panel_status: Optional[str] = None
+    issue_category: Optional[str] = None
+    description: Optional[str] = None
 
 class InvoiceView(BaseModel):
     model_config = ConfigDict(from_attributes=True)

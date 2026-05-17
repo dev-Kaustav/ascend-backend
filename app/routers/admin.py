@@ -65,6 +65,7 @@ from app.schemas.admin import (
 from app.schemas.order import OrderListPage
 from app.schemas.access_rules import AccessRuleResponse, AccessRuleUpsert
 from app.core.deps import require_admin, require_roles, require_warehouse_manager
+from app.models.beat import Beat
 
 router = APIRouter()
 
@@ -184,8 +185,13 @@ def export_orders_endpoint(
     )
 
 @router.get("/summary")
-def get_admin_summary_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
-    return get_admin_summary(db)
+def get_admin_summary_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+):
+    return get_admin_summary(db, from_date=from_date, to_date=to_date)
 
 @router.get("/company-profile", response_model=CompanyProfileResponse)
 def get_company_profile_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
@@ -203,8 +209,10 @@ def update_company_profile_endpoint(
 def get_order_status_summary_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER")),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
 ):
-    return get_order_status_summary(db)
+    return get_order_status_summary(db, from_date=from_date, to_date=to_date)
 
 @router.get("/retailers", response_model=list[RetailerResponse])
 def list_retailers_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
@@ -226,6 +234,26 @@ def list_skus_endpoint(db: Session = Depends(get_db), current_user = Depends(req
 def list_warehouses_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
     return list_warehouses(db)
 
+@router.get("/beats")
+def list_beats_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
+    return db.query(Beat).order_by(Beat.name).all()
+
+@router.post("/beats")
+def create_beat_endpoint(payload: dict, db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Beat name is required")
+    existing = db.query(Beat).filter(Beat.name == name).first()
+    if existing:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Beat already exists")
+    beat = Beat(name=name, warehouse_id=payload.get("warehouse_id") or None)
+    db.add(beat)
+    db.commit()
+    db.refresh(beat)
+    return beat
+
 @router.get("/lookups")
 def list_lookups_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
     return {
@@ -236,6 +264,7 @@ def list_lookups_endpoint(db: Session = Depends(get_db), current_user = Depends(
         "salesmen": list_salesmen(db),
         "warehouse_managers": list_warehouse_managers(db),
         "drivers": list_drivers(db),
+        "beats": db.query(Beat).order_by(Beat.name).all(),
     }
 
 @router.get("/groups", response_model=list[GroupResponse])

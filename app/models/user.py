@@ -13,6 +13,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)
+    retailer_id = Column(Integer, ForeignKey("retailers.id"), nullable=True)
     role = Column(Enum(EmployeeRole, name="employee_role"), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

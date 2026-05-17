@@ -43,7 +43,7 @@ def test_accountant_access(client, db):
         from_entity_id=1,
         to_entity_type="RETAILER",
         to_entity_id=1,
-        status=OrderStatus.CONFIRMED
+        status=OrderStatus.DELIVERED
     )
     db.add(order)
     db.commit()

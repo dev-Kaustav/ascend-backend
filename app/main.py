@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, admin, orders, accounting, bill_labels
+from app.routers import auth, admin, orders, accounting, bill_labels, imports, dashboard_api, outlet_finder
 
 app = FastAPI(title="Ascend Foods Backend")
 
@@ -20,7 +20,8 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -29,3 +30,6 @@ app.include_router(orders.router, prefix="/orders", tags=["orders"])
 app.include_router(accounting.router, prefix="/accounting", tags=["accounting"])
 app.include_router(accounting.public_router, tags=["accounting"])
 app.include_router(bill_labels.router, prefix="/bill-labels", tags=["bill-labels"])
+app.include_router(imports.router, prefix="/imports", tags=["imports"])
+app.include_router(dashboard_api.router, prefix="/dashboard", tags=["dashboard"])
+app.include_router(outlet_finder.router, prefix="/outlet-finder", tags=["outlet-finder"])

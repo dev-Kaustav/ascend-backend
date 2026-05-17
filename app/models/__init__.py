@@ -7,12 +7,14 @@ from .sku import SKU
 from .sku_batch import SKUBatch
 from .inventory import Inventory
 from .inventory_transaction import InventoryTransaction
+from .beat import Beat
 from .order import Order
 from .order_item import OrderItem
 from .order_item_tax import OrderItemTax
 from .order_item_batch import OrderItemBatch
 from .account import Account
 from .credit_note import CreditNote
+from .order_trail import OrderTrail
 from .credit_note_item import CreditNoteItem
 from .permission import Permission
 from .role_permission import RolePermission
