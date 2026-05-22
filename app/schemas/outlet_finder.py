@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -41,3 +42,31 @@ class MarkDeliveredResponse(BaseModel):
     new_longitude: Optional[float] = None
     requires_confirmation: bool = False
     message: Optional[str] = None
+
+
+class AssignmentCreateRequest(BaseModel):
+    driver_employee_id: int
+    external_ids: list[str] = Field(..., min_length=1, max_length=200)
+    note: Optional[str] = None
+
+
+class AssignmentItem(BaseModel):
+    external_id: str
+    name: str
+    address: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
+    delivered: bool
+
+
+class AssignmentResponse(BaseModel):
+    id: int
+    driver_employee_id: int
+    driver_name: Optional[str]
+    status: str
+    note: Optional[str]
+    created_at: datetime
+    accepted_at: Optional[datetime]
+    items: list[AssignmentItem]
+    delivered_count: int
+    total_count: int

@@ -17,6 +17,10 @@ class OrderStatus(str, Enum):
     RETURNED = "RETURNED"
     CANCELLED = "CANCELLED"
 
+class AssignmentStatus(str, Enum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+
 class TransactionType(str, Enum):
     IN = "IN"
     OUT = "OUT"
