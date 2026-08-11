@@ -1,10 +1,12 @@
 from sqlalchemy import Column, Integer, String
 
 from app.db.base import Base
+from .enums import state_check_constraint
 
 
 class CompanyProfile(Base):
     __tablename__ = "company_profile"
+    __table_args__ = (state_check_constraint("company_profile"),)
 
     id = Column(Integer, primary_key=True, index=True)
     legal_name = Column(String, nullable=False, default="Ascend Foods")

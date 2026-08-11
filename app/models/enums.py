@@ -1,5 +1,61 @@
 from enum import Enum
 
+from sqlalchemy import CheckConstraint
+
+# 28 states + 8 union territories. This module is the single source of truth for the
+# canonical set; app/db/migrations/versions/0043_state_check_constraint.py imports this
+# constant so the migration and the models cannot drift from each other.
+# Union territories: Andaman and Nicobar Islands, Chandigarh,
+# Dadra and Nagar Haveli and Daman and Diu, Delhi, Jammu and Kashmir, Ladakh,
+# Lakshadweep, Puducherry.
+INDIAN_STATES: tuple[str, ...] = (
+    "Andaman and Nicobar Islands",
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chandigarh",
+    "Chhattisgarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jammu and Kashmir",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Ladakh",
+    "Lakshadweep",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Puducherry",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+)
+
+
+def state_check_constraint(table_name: str) -> CheckConstraint:
+    states_list = ", ".join(f"'{s}'" for s in INDIAN_STATES)
+    return CheckConstraint(
+        f"state IS NULL OR state IN ({states_list})",
+        name=f"ck_{table_name}_state",
+    )
+
+
 class EmployeeRole(str, Enum):
     ADMIN = "ADMIN"
     SALESMAN = "SALESMAN"
