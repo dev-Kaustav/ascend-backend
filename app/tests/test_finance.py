@@ -41,3 +41,46 @@ def test_order_totals_treat_gst_as_included_in_discounted_mrp(db):
     assert totals["gst_amount"] == Decimal("21.15")
     assert totals["taxable_value"] == Decimal("401.85")
     assert totals["grand_total"] == Decimal("423.00")
+
+
+def test_order_totals_with_zero_tax_rows_does_not_raise(db):
+    # Regression test for a bug found and fixed in 01-03: an order item with
+    # no tax rows at all (a zero-GST SKU with no fallback tax) made
+    # sum(tax.rate for tax in item.taxes) default to Python int 0, and
+    # 0 / 100 is a float in Python 3, so Decimal * float raised TypeError.
+    # Fixed by seeding every sum() with the module-level ZERO = Decimal("0").
+    # This test pins that fix so a future refactor of finance.py cannot
+    # silently reintroduce it.
+    brand = Brand(name="Brand")
+    db.add(brand)
+    db.flush()
+    sku = SKU(name="SKU", brand_id=brand.id)
+    db.add(sku)
+    db.flush()
+    order = Order(
+        from_entity_type="WAREHOUSE",
+        from_entity_id=1,
+        to_entity_type="RETAILER",
+        to_entity_id=1,
+        status=OrderStatus.DELIVERED,
+    )
+    db.add(order)
+    db.flush()
+    item = OrderItem(
+        order_id=order.id,
+        sku_id=sku.id,
+        quantity=1,
+        unit_price=100,
+        discount_amount=0,
+    )
+    db.add(item)
+    db.commit()
+    # No OrderItemTax rows added for this item: item.taxes is empty.
+
+    totals = calculate_order_totals(order)
+
+    assert totals["gst_amount"] == Decimal("0.00")
+    assert totals["taxable_value"] == Decimal("100.00")
+    assert totals["grand_total"] == Decimal("100.00")
+    for value in totals.values():
+        assert isinstance(value, Decimal)
