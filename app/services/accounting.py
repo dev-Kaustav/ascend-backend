@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.models import Account, CreditNote, CreditNoteItem, InventoryTransaction, Inventory, Order, Employee, Retailer
 from app.schemas.accounting import PaymentCreate, CreditNoteCreate, MultiPaymentCreate
 from app.models.enums import TransactionType, PaymentStatus, OrderStatus, PaymentMode
-from app.services.finance import calculate_credit_note_totals, calculate_order_outstanding, calculate_order_totals
+from app.services.finance import (
+    calculate_credit_note_totals,
+    calculate_order_outstanding,
+    calculate_order_totals,
+    _round_money,
+)
 from app.services.transactions import transactional_session
 
 
@@ -51,7 +56,7 @@ def create_payment(db: Session, order_id: int, payment: PaymentCreate):
     with transactional_session(db):
         db_payment = Account(
             order_id=order_id,
-            amount=round(float(payment.amount or 0), 2),
+            amount=_round_money(payment.amount),
             transaction_reference=payment.transaction_reference,
             payment_mode=payment_mode_enum,
             collected_by_id=payment.collected_by_id,
@@ -96,7 +101,7 @@ def create_multi_payment(db: Session, data: MultiPaymentCreate):
             ref = f"{mode_val}-{order.id}-{len(order.payments) + 1}-{int(datetime.utcnow().timestamp())}-{i}"
             db_payment = Account(
                 order_id=order.id,
-                amount=round(float(line.amount or 0), 2),
+                amount=_round_money(line.amount),
                 transaction_reference=ref,
                 payment_mode=payment_mode_enum,
                 collected_by_id=data.collected_by_id,
@@ -146,7 +151,7 @@ def create_credit_note(db: Session, credit_note: CreditNoteCreate):
                 credit_note_id=db_credit_note.id,
                 sku_id=item.sku_id,
                 quantity=item.quantity,
-                unit_price=round(float(item.unit_price or 0), 2)
+                unit_price=_round_money(item.unit_price)
             )
             db.add(db_item)
             if credit_note.restock:

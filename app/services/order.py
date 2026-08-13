@@ -1,4 +1,5 @@
 from datetime import datetime, date, time as dtime
+from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
@@ -22,7 +23,12 @@ from app.models import (
 from app.models.user import User
 from app.schemas.order import OrderCreate, StatusUpdate
 from app.models.enums import OrderStatus, TransactionType, PaymentStatus, PaymentMode
-from app.services.finance import calculate_order_item_totals, calculate_order_outstanding, calculate_order_totals
+from app.services.finance import (
+    calculate_order_item_totals,
+    calculate_order_outstanding,
+    calculate_order_totals,
+    _round_money,
+)
 from app.services.transactions import transactional_session
 from app.core.deps import get_role_value
 
@@ -67,9 +73,6 @@ def _check_role_for_transition(current_user, next_status: OrderStatus, order: "O
 def _is_outgoing_order(order: Order) -> bool:
     return order.from_entity_type == "WAREHOUSE" and order.to_entity_type == "RETAILER"
 
-def _round_money(value: float) -> float:
-    return round(float(value or 0), 2)
-
 def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> bool:
     warehouse_state = getattr(warehouse, "state", None)
     retailer_state = getattr(retailer, "state", None)
@@ -99,13 +102,13 @@ def _assign_invoice_number(db: Session, order: Order):
             return
         next_number += 1
 
-def _fallback_tax_rate(item) -> float:
-    return sum(float(tax.rate or 0) for tax in getattr(item, "taxes", []) or [])
+def _fallback_tax_rate(item) -> Decimal:
+    return sum((tax.rate or Decimal("0") for tax in getattr(item, "taxes", []) or []), Decimal("0"))
 
 def _tax_rows_for_item(sku: SKU | None, item, inter_state: bool) -> list[dict]:
-    sgst = float(getattr(sku, "sgst_percent", None) or 0)
-    cgst = float(getattr(sku, "cgst_percent", None) or 0)
-    igst = float(getattr(sku, "igst_percent", None) or 0)
+    sgst = getattr(sku, "sgst_percent", None) or Decimal("0")
+    cgst = getattr(sku, "cgst_percent", None) or Decimal("0")
+    igst = getattr(sku, "igst_percent", None) or Decimal("0")
     fallback = _fallback_tax_rate(item)
     if inter_state:
         rate = igst or (sgst + cgst) or fallback
@@ -247,7 +250,7 @@ def _record_payment(db: Session, order: Order, payment_mode: str | None, payment
         raise ValueError("Invalid payment mode")
     totals = calculate_order_totals(order)
     outstanding_before = calculate_order_outstanding(order)
-    amount = outstanding_before if payment_amount is None else round(float(payment_amount), 2)
+    amount = outstanding_before if payment_amount is None else _round_money(payment_amount)
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero")
     if amount > outstanding_before:
@@ -336,8 +339,8 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
                 order_id=db_order.id,
                 sku_id=item.sku_id,
                 quantity=item.quantity,
-                unit_price=round(float(item.unit_price or 0), 2),
-                discount_amount=round(float(item.discount_amount or 0), 2)
+                unit_price=_round_money(item.unit_price),
+                discount_amount=_round_money(item.discount_amount)
             )
             db.add(db_item)
             db.flush()
