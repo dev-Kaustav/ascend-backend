@@ -4,6 +4,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List
 from datetime import datetime, date
 
+from app.models.enums import INDIAN_STATES
+
 class PermissionEntry(BaseModel):
     code: str
     is_allowed: bool
@@ -72,6 +74,16 @@ class WarehouseCreate(BaseModel):
             raise ValueError("Pincode must be 6 digits.")
         return int(raw)
 
+    @field_validator("state")
+    @classmethod
+    def normalize_state(cls, value):
+        if value is None or value.strip() == "":
+            return None
+        value = value.strip()
+        if value not in INDIAN_STATES:
+            raise ValueError("State must be one of the 28 Indian states or 8 union territories.")
+        return value
+
 class WarehouseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -128,6 +140,16 @@ class RetailerCreate(BaseModel):
         if len(raw) != 6:
             raise ValueError("Pincode must be 6 digits.")
         return int(raw)
+
+    @field_validator("state")
+    @classmethod
+    def normalize_state(cls, value):
+        if value is None or value.strip() == "":
+            return None
+        value = value.strip()
+        if value not in INDIAN_STATES:
+            raise ValueError("State must be one of the 28 Indian states or 8 union territories.")
+        return value
 
 class RetailerResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -226,7 +248,15 @@ class CompanyProfileBase(BaseModel):
     invoice_footer: Optional[str] = None
 
 class CompanyProfileUpdate(CompanyProfileBase):
-    pass
+    @field_validator("state")
+    @classmethod
+    def normalize_state(cls, value):
+        if value is None or value.strip() == "":
+            return None
+        value = value.strip()
+        if value not in INDIAN_STATES:
+            raise ValueError("State must be one of the 28 Indian states or 8 union territories.")
+        return value
 
 class CompanyProfileResponse(CompanyProfileBase):
     model_config = ConfigDict(from_attributes=True)

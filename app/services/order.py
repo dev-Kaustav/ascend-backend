@@ -70,12 +70,9 @@ def _is_outgoing_order(order: Order) -> bool:
 def _round_money(value: float) -> float:
     return round(float(value or 0), 2)
 
-def _normalize_state(value: str | None) -> str:
-    return "".join(ch for ch in (value or "").strip().lower() if ch.isalnum())
-
 def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> bool:
-    warehouse_state = _normalize_state(getattr(warehouse, "state", None))
-    retailer_state = _normalize_state(getattr(retailer, "state", None))
+    warehouse_state = getattr(warehouse, "state", None)
+    retailer_state = getattr(retailer, "state", None)
     return bool(warehouse_state and retailer_state and warehouse_state != retailer_state)
 
 def _get_company_profile_for_update(db: Session) -> CompanyProfile:
