@@ -1,17 +1,20 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from app.models import Order, CreditNote
 
 
-def _round_money(value: float) -> float:
-    return round(float(value or 0), 2)
+def _round_money(value) -> Decimal:
+    d = value if isinstance(value, Decimal) else Decimal(str(value or 0))
+    return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _order_item_taxable_value(item) -> float:
+def _order_item_taxable_value(item) -> Decimal:
     discount_amount = item.discount_amount or 0
     inclusive_value = max(item.quantity * item.unit_price - discount_amount, 0)
     return _round_money(max(inclusive_value - _order_item_tax_amount(item), 0))
 
 
-def _order_item_tax_amount(item) -> float:
+def _order_item_tax_amount(item) -> Decimal:
     inclusive_value = max(item.quantity * item.unit_price - (item.discount_amount or 0), 0)
     total_rate = sum(tax.rate for tax in item.taxes)
     return _round_money(inclusive_value * (total_rate / 100))
@@ -76,9 +79,17 @@ def calculate_credit_note_totals(credit_note: CreditNote) -> dict:
     }
 
 
-def calculate_order_outstanding(order: Order) -> float:
+def calculate_order_outstanding(order: Order) -> Decimal:
     order_totals = calculate_order_totals(order)
-    payments_total = sum(payment.amount for payment in order.payments)
+    # Payments appended to `order.payments` in the same transaction (e.g.
+    # create_payment, before flush) may still hold the raw Python value
+    # assigned at construction rather than the Decimal SQLAlchemy would
+    # return after a round-trip through the Numeric column. Route each
+    # through _round_money so the accumulation is Decimal-native regardless
+    # of flush state.
+    payments_total = sum(
+        (_round_money(payment.amount) for payment in order.payments), Decimal("0")
+    )
     credit_total = 0
     for credit_note in order.credit_notes:
         if getattr(credit_note, "applies_to_outstanding", True):

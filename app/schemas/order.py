@@ -8,7 +8,7 @@ class OrderItemTaxCreate(BaseModel):
 
 class OrderItemCreate(BaseModel):
     sku_id: int
-    quantity: float
+    quantity: int
     unit_price: float
     discount_amount: float = 0
     taxes: list[OrderItemTaxCreate] = Field(default_factory=list)

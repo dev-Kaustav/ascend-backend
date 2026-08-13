@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Date, Float, ForeignKey
+from sqlalchemy import Column, Integer, Date, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -11,8 +11,8 @@ class SKUBatch(Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     mfg_date = Column(Date)
     expiry_date = Column(Date)
-    quantity_received = Column(Float, nullable=False)
-    remaining_quantity = Column(Float, nullable=False)
-    reserved_quantity = Column(Float, default=0, nullable=False)
+    quantity_received = Column(Integer, nullable=False)
+    remaining_quantity = Column(Integer, nullable=False)
+    reserved_quantity = Column(Integer, default=0, nullable=False)
 
     order_item_batches = relationship("OrderItemBatch", back_populates="batch")

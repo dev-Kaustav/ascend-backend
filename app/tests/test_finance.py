@@ -1,4 +1,4 @@
-import pytest
+from decimal import Decimal
 
 from app.models import Order, OrderItem, OrderItemTax, Brand, SKU
 from app.models.enums import OrderStatus
@@ -35,6 +35,9 @@ def test_order_totals_treat_gst_as_included_in_discounted_mrp(db):
 
     totals = calculate_order_totals(order)
 
-    assert totals["gst_amount"] == pytest.approx(21.15)
-    assert totals["taxable_value"] == pytest.approx(401.85)
-    assert totals["grand_total"] == pytest.approx(423)
+    # Exact Decimal arithmetic: 423 * 5% = 21.15 exactly, no rounding drift,
+    # so this is an exact comparison rather than pytest.approx() now that
+    # calculate_order_totals returns Decimal end-to-end.
+    assert totals["gst_amount"] == Decimal("21.15")
+    assert totals["taxable_value"] == Decimal("401.85")
+    assert totals["grand_total"] == Decimal("423.00")

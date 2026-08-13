@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Numeric, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -9,6 +9,6 @@ class OrderItemTax(Base):
     id = Column(Integer, primary_key=True, index=True)
     order_item_id = Column(Integer, ForeignKey("order_items.id"), nullable=False)
     tax_type = Column(String, nullable=False)
-    rate = Column(Float, nullable=False)
+    rate = Column(Numeric(12, 2), nullable=False)
 
     order_item = relationship("OrderItem", back_populates="taxes")

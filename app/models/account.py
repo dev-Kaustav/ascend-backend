@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, ForeignKey, Enum
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -10,7 +10,7 @@ class Account(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
-    amount = Column(Float, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
     transaction_reference = Column(String, unique=True, nullable=False)
     payment_mode = Column(Enum(PaymentMode, name="payment_mode"), nullable=True)
     collected_by_id = Column(Integer, ForeignKey("employees.id"), nullable=True)

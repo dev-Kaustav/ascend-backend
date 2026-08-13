@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, DateTime, Enum, ForeignKey
+from sqlalchemy import Column, Integer, DateTime, Enum, ForeignKey
 from sqlalchemy.sql import func
 
 from app.db.base import Base
@@ -12,5 +12,5 @@ class InventoryTransaction(Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     batch_id = Column(Integer, ForeignKey("sku_batches.id"), nullable=True)
     transaction_type = Column(Enum(TransactionType, name="transaction_type"), nullable=False)
-    quantity = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

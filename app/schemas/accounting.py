@@ -48,7 +48,7 @@ class PaymentPage(BaseModel):
 
 class CreditNoteItemCreate(BaseModel):
     sku_id: int
-    quantity: float
+    quantity: int
     unit_price: float
 
 class CreditNoteItemResponse(BaseModel):

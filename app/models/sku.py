@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, Float, Numeric
 
 from app.db.base import Base
 
@@ -9,18 +9,18 @@ class SKU(Base):
     name = Column(String, nullable=False)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=False)
     hsn_code = Column(String)
-    distributor_landing_price = Column(Float)
-    mrp = Column(Float)
-    discount_amount = Column(Float, default=0)
-    discount_percent = Column(Float, default=0)
-    rate = Column(Float)
-    sgst_percent = Column(Float)
-    sgst_amount = Column(Float)
-    cgst_percent = Column(Float)
-    cgst_amount = Column(Float)
-    igst_percent = Column(Float)
-    igst_amount = Column(Float)
-    amount = Column(Float)
+    distributor_landing_price = Column(Numeric(12, 2))
+    mrp = Column(Numeric(12, 2))
+    discount_amount = Column(Numeric(12, 2), default=0)
+    discount_percent = Column(Numeric(12, 2), default=0)
+    rate = Column(Numeric(12, 2))
+    sgst_percent = Column(Numeric(12, 2))
+    sgst_amount = Column(Numeric(12, 2))
+    cgst_percent = Column(Numeric(12, 2))
+    cgst_amount = Column(Numeric(12, 2))
+    igst_percent = Column(Numeric(12, 2))
+    igst_amount = Column(Numeric(12, 2))
+    amount = Column(Numeric(12, 2))
     weight = Column(Float)
     length_cm = Column(Float)
     width_cm = Column(Float)
