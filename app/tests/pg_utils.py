@@ -6,6 +6,7 @@ import os
 import re
 
 from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
 _ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
@@ -31,4 +32,9 @@ def resolve_host_database_url() -> str:
 
 
 def pg_engine():
-    return create_engine(resolve_host_database_url())
+    # NullPool: each connect() opens a real, independent database connection with no
+    # shared pool ceiling. The 16-way concurrent nextval() test (INV-04) opens 16
+    # simultaneous connections from one engine; SQLAlchemy's default QueuePool caps out
+    # at 5 + 10 overflow = 15, which would deadlock the 16th thread waiting for a slot
+    # that never frees while the other 15 are blocked on a shared barrier.
+    return create_engine(resolve_host_database_url(), poolclass=NullPool)
