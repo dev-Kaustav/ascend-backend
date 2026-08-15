@@ -10,34 +10,40 @@ from app.models.enums import EmployeeRole
 
 def test_fefo_allocation(db):
     brand = Brand(name="Brand")
-    db.add(brand)
+    warehouse = Warehouse(name="FEFO WH", location="Delhi", state="Delhi")
+    retailer = Retailer(name="FEFO Retailer", state="Delhi")
+    db.add_all([brand, warehouse, retailer])
     db.commit()
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.commit()
     batch_early = SKUBatch(
         sku_id=sku.id,
-        warehouse_id=1,
+        warehouse_id=warehouse.id,
         expiry_date=date(2024, 1, 1),
         quantity_received=5,
         remaining_quantity=5
     )
     batch_late = SKUBatch(
         sku_id=sku.id,
-        warehouse_id=1,
+        warehouse_id=warehouse.id,
         expiry_date=date(2024, 6, 1),
         quantity_received=10,
         remaining_quantity=10
     )
     db.add_all([batch_early, batch_late])
     db.commit()
-    inventory = Inventory(sku_id=sku.id, warehouse_id=1, total_quantity=15)
+    inventory = Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=15)
     db.add(inventory)
     db.commit()
     user = User(email="admin@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
     db.add(user)
     db.commit()
-    order = OrderCreate(retailer_id=1, items=[OrderItemCreate(sku_id=sku.id, quantity=6, unit_price=100, discount_amount=0)])
+    order = OrderCreate(
+        retailer_id=retailer.id,
+        warehouse_id=warehouse.id,
+        items=[OrderItemCreate(sku_id=sku.id, quantity=6, unit_price=100, discount_amount=0)],
+    )
     result = create_outgoing_order(db, order, user)
     assert result is not None
     updated_inventory = db.query(Inventory).filter(Inventory.sku_id == sku.id).first()

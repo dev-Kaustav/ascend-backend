@@ -54,9 +54,9 @@ def _get_or_create_company_profile(db: Session) -> CompanyProfile:
 
 
 def next_invoice_number(db: Session) -> tuple[str, int]:
-    """Return (formatted_number, serial). Does not read or write
-    `company_profile.invoice_next_number` — that column stops being the source of
-    truth this phase (D-04); it is dropped in plan 02-03."""
+    """Return (formatted_number, serial). Does not read or write the old
+    read-modify-write counter column on company_profile — that column was dropped in
+    plan 02-03's migration 0046 (D-04); this function never depended on it."""
     profile = _get_or_create_company_profile(db)
     prefix = (profile.invoice_prefix or "ASC").strip().upper() or "ASC"
     serial = _next_invoice_serial(db)
