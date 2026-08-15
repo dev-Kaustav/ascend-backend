@@ -48,11 +48,11 @@ INDIAN_STATES: tuple[str, ...] = (
 )
 
 
-def state_check_constraint(table_name: str) -> CheckConstraint:
+def state_check_constraint(table_name: str, column: str = "state") -> CheckConstraint:
     states_list = ", ".join(f"'{s}'" for s in INDIAN_STATES)
     return CheckConstraint(
-        f"state IS NULL OR state IN ({states_list})",
-        name=f"ck_{table_name}_state",
+        f"{column} IS NULL OR {column} IN ({states_list})",
+        name=f"ck_{table_name}_{column}",
     )
 
 
@@ -107,3 +107,18 @@ class IssueCategory(str, Enum):
     LOW_AMOUNT = "LOW_AMOUNT"
     SHOP_CLOSED = "SHOP_CLOSED"
     OTHER = "OTHER"
+
+class InvoiceStatus(str, Enum):
+    ISSUED = "ISSUED"
+
+class InvoiceType(str, Enum):
+    B2B = "B2B"
+    B2C = "B2C"
+
+class SupplyType(str, Enum):
+    REGULAR = "REGULAR"
+    SEZWP = "SEZWP"
+    SEZWOP = "SEZWOP"
+    EXPWP = "EXPWP"
+    EXPWOP = "EXPWOP"
+    DEXP = "DEXP"

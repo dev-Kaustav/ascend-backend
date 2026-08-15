@@ -29,3 +29,4 @@ class Order(Base):
     credit_notes = relationship("CreditNote", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Account", back_populates="order", cascade="all, delete-orphan")
     trails = relationship("OrderTrail", backref="order", cascade="all, delete-orphan", order_by="OrderTrail.created_at")
+    invoice = relationship("Invoice", back_populates="order", uselist=False)

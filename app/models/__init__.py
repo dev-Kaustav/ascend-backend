@@ -9,6 +9,7 @@ from .inventory import Inventory
 from .inventory_transaction import InventoryTransaction
 from .beat import Beat
 from .order import Order
+from .invoice import Invoice, InvoiceLine
 from .order_item import OrderItem
 from .order_item_tax import OrderItemTax
 from .order_item_batch import OrderItemBatch
