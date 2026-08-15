@@ -1,3 +1,4 @@
+from decimal import Decimal
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -7,8 +8,14 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from sqlalchemy.orm import Session
 
-from app.models import CompanyProfile
-from app.services.order import get_order_invoice_view
+from app.models import CompanyProfile, Invoice
+
+# No import of the order service module here, ever. That import is the re-derivation
+# path INV-03 exists to retire: render_invoice_pdf's only inputs are the Invoice/InvoiceLine
+# snapshot (both of which may be transient, unflushed objects) plus the live
+# CompanyProfile for a handful of presentation-only fields that are not part of the
+# legal snapshot (phone, email, footer text). No name, address, GSTIN, amount, rate or
+# date is ever read from a live Order, OrderItem, OrderItemTax, SKU or Retailer.
 
 PAGE_WIDTH, PAGE_HEIGHT = A4
 MARGIN = 15 * mm
@@ -47,24 +54,31 @@ def _p(text, style=STYLE_NORMAL):
 
 
 def _money(value) -> str:
-    v = float(value or 0)
-    return f"{v:,.2f}"
+    # Format the Decimal directly rather than routing through float(). A float round
+    # trip is exactly the pattern Phase 1 spent a whole phase removing; there is no
+    # reason to reintroduce it at a new call site, even in a presentation function.
+    d = value if isinstance(value, Decimal) else Decimal(str(value or 0))
+    return f"{d:,.2f}"
 
 
 def _company_profile(db: Session) -> CompanyProfile:
+    """Presentation-only fields not carried on the Invoice snapshot: phone, email,
+    invoice_footer. Never source a name, address, GSTIN, amount, rate or date from this
+    — those all live on the invoice itself."""
     profile = db.query(CompanyProfile).order_by(CompanyProfile.id.asc()).first()
     if profile:
         return profile
     return CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC")
 
 
-def _build_header_table(company: CompanyProfile):
-    left_lines = [_p(company.legal_name or "Ascend Foods", STYLE_HEADER)]
+def _build_header_table(invoice: Invoice, company: CompanyProfile):
+    left_lines = [_p(invoice.supplier_legal_name or "Ascend Foods", STYLE_HEADER)]
     for line in [
-        company.address_line1,
-        company.address_line2,
-        ", ".join(filter(None, [company.city, company.state, str(company.pincode or "")])),
-        f"GSTIN: {company.gstin}" if company.gstin else None,
+        invoice.supplier_address,
+        ", ".join(filter(None, [invoice.supplier_state, invoice.supplier_pincode])),
+        f"GSTIN: {invoice.supplier_gstin}" if invoice.supplier_gstin else None,
+        # phone/email are not part of the snapshot — presentation-only, from the live
+        # CompanyProfile, not from the invoice.
         f"Contact: {company.phone}" if company.phone else None,
         f"E-Mail: {company.email}" if company.email else None,
     ]:
@@ -89,19 +103,20 @@ def _build_header_table(company: CompanyProfile):
     return tbl
 
 
-def _build_order_info_table(order, invoice_date):
+def _build_invoice_info_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
+    try:
+        invoice_date = invoice.invoice_date.strftime("%B %d, %Y")
+    except AttributeError:
+        invoice_date = str(invoice.invoice_date or "")[:10]
+
     data = [
         [
-            _p(f"Order Date: {invoice_date}", STYLE_NORMAL),
-            _p(f"Order ID: {order.get('id', '')}", STYLE_NORMAL),
+            _p(f"Invoice Date: {invoice_date}", STYLE_NORMAL),
+            _p(f"Order ID: {invoice.order_id}", STYLE_NORMAL),
         ],
         [
-            _p(f"Salesman Name: <b>{order.get('salesman_name') or '-'}</b>", STYLE_NORMAL),
-            _p(f"Payment Mode: <b>{order.get('payment_status') or 'CREDIT'}</b>", STYLE_NORMAL),
-        ],
-        [
-            _p(f"INVOICE NUMBER: <b>{order.get('invoice_number') or '-'}</b>", STYLE_NORMAL),
+            _p(f"INVOICE NUMBER: <b>{invoice.invoice_number or '-'}</b>", STYLE_NORMAL),
             _p(""),
         ],
     ]
@@ -116,22 +131,16 @@ def _build_order_info_table(order, invoice_date):
     return tbl
 
 
-def _build_address_table(order):
+def _build_address_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
-    retailer_name = order.get("retailer_name") or f"Retailer {order.get('to_entity_id', '')}"
-    addr_parts = filter(None, [
-        order.get("retailer_address_line1"),
-        ", ".join(filter(None, [order.get("retailer_city"), order.get("retailer_state")])),
-        f"Pincode: {order.get('retailer_pincode')}" if order.get("retailer_pincode") else None,
-    ])
+    buyer_name = invoice.buyer_name or "-"
 
     def _addr_block(heading):
-        lines = [_p(f"<b>{heading}</b>", STYLE_LABEL), _p(f"<b>{retailer_name}</b>", STYLE_NORMAL_BOLD)]
+        lines = [_p(f"<b>{heading}</b>", STYLE_LABEL), _p(f"<b>{buyer_name}</b>", STYLE_NORMAL_BOLD)]
         for part in filter(None, [
-            order.get("retailer_address_line1"),
-            ", ".join(filter(None, [order.get("retailer_city"), order.get("retailer_state")])),
-            f"Pincode: {order.get('retailer_pincode')}" if order.get("retailer_pincode") else None,
-            f"GSTIN: {order.get('retailer_gst_number')}" if order.get("retailer_gst_number") else None,
+            invoice.buyer_address,
+            ", ".join(filter(None, [invoice.buyer_state, invoice.buyer_pincode])),
+            f"GSTIN: {invoice.buyer_gstin}" if invoice.buyer_gstin else None,
         ]):
             lines.append(_p(part, STYLE_SMALL))
         return lines
@@ -150,69 +159,51 @@ def _build_address_table(order):
     return tbl
 
 
-def _extract_taxes(item):
-    taxes = item.get("taxes", [])
-    sgst_pct = sgst_amt = cgst_pct = cgst_amt = igst_pct = igst_amt = 0.0
-    for tax in taxes:
-        tt = (tax.get("tax_type") or "").upper()
-        rate = float(tax.get("rate") or 0)
-        taxable = float(item.get("taxable_value") or 0)
-        amt = round(taxable * rate / 100, 2)
-        if tt == "SGST":
-            sgst_pct = rate
-            sgst_amt = amt
-        elif tt == "CGST":
-            cgst_pct = rate
-            cgst_amt = amt
-        elif tt == "IGST":
-            igst_pct = rate
-            igst_amt = amt
-    return sgst_pct, sgst_amt, cgst_pct, cgst_amt, igst_pct, igst_amt
-
-
-def _build_items_table(items):
+def _build_items_table(invoice: Invoice):
+    """Built from `invoice.lines` alone — every tax figure is a stored column, never
+    recomputed. There used to be an `_extract_taxes` helper here that independently
+    computed `taxable * rate / 100`, a second tax computation disagreeing with
+    `finance.py`'s `inclusive_value * rate / 100` (a direct D-03 violation). It is gone;
+    the components below are read straight off the InvoiceLine snapshot."""
     content_width = PAGE_WIDTH - 2 * MARGIN
-    col_widths = [
-        20, content_width * 0.18, 48, 28, 42, 38, 48, 32, 38, 32, 38, 48
-    ]
+    inter_state = invoice.is_inter_state
 
-    header = ["Sr.", "Item Description", "HSN", "Qty", "MRP", "Disc", "Rate",
-              "SGST %", "SGST", "CGST %", "CGST", "Amount"]
+    if inter_state:
+        header = ["Sr.", "Item Description", "HSN", "Qty", "Unit Rate", "Disc",
+                  "Taxable", "IGST %", "IGST", "Amount"]
+        col_widths = [20, content_width * 0.22, 48, 28, 42, 38, 48, 34, 42, 52]
+    else:
+        header = ["Sr.", "Item Description", "HSN", "Qty", "Unit Rate", "Disc",
+                  "Taxable", "SGST %", "SGST", "CGST %", "CGST", "Amount"]
+        col_widths = [20, content_width * 0.16, 42, 24, 38, 34, 42, 30, 36, 30, 36, 46]
+
     data = [header]
 
-    total_discount = 0.0
-    total_sgst = 0.0
-    total_cgst = 0.0
-
-    for i, item in enumerate(items, 1):
-        sgst_pct, sgst_amt, cgst_pct, cgst_amt, igst_pct, igst_amt = _extract_taxes(item)
-        qty = float(item.get("quantity") or 0)
-        unit_price = float(item.get("unit_price") or 0)
-        discount = float(item.get("discount_amount") or 0)
-        taxable = float(item.get("taxable_value") or 0)
-        line_total = float(item.get("line_total") or 0)
-
-        total_discount += discount * qty if discount else 0
-        total_sgst += sgst_amt
-        total_cgst += cgst_amt
-
-        disc_str = f"{_money(discount)}({0}%)" if discount else "0(0%)"
-        rate = _money(taxable)
-
-        data.append([
-            str(i),
-            _p(item.get("sku_name") or f"SKU {item.get('sku_id')}", STYLE_SMALL),
-            item.get("hsn_code") or "-",
-            str(int(qty)) if qty == int(qty) else _money(qty),
-            _money(unit_price),
-            disc_str,
-            rate,
-            f"{sgst_pct:.2f}" if sgst_pct else "-",
-            _money(sgst_amt) if sgst_amt else "-",
-            f"{cgst_pct:.2f}" if cgst_pct else "-",
-            _money(cgst_amt) if cgst_amt else "-",
-            _money(line_total),
-        ])
+    for line in invoice.lines:
+        qty = line.quantity or 0
+        row = [
+            str(line.line_number),
+            _p(line.description or f"SKU {line.sku_id}", STYLE_SMALL),
+            line.hsn_code or "-",
+            str(qty),
+            _money(line.unit_rate),
+            _money(line.discount_amount) if line.discount_amount else "0.00",
+            _money(line.taxable_value),
+        ]
+        if inter_state:
+            row += [
+                f"{line.igst_rate:.2f}" if line.igst_rate else "-",
+                _money(line.igst_amount) if line.igst_amount else "-",
+            ]
+        else:
+            row += [
+                f"{line.sgst_rate:.2f}" if line.sgst_rate else "-",
+                _money(line.sgst_amount) if line.sgst_amount else "-",
+                f"{line.cgst_rate:.2f}" if line.cgst_rate else "-",
+                _money(line.cgst_amount) if line.cgst_amount else "-",
+            ]
+        row.append(_money(line.line_total))
+        data.append(row)
 
     tbl = Table(data, colWidths=col_widths, repeatRows=1)
     style = TableStyle([
@@ -231,21 +222,24 @@ def _build_items_table(items):
         ("ALIGN", (1, 0), (1, -1), "LEFT"),
     ])
     tbl.setStyle(style)
-    return tbl, total_discount, total_sgst, total_cgst
+    return tbl
 
 
-def _build_totals_table(invoice, order, total_discount, total_sgst, total_cgst):
+def _build_totals_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
-    sub_total = float(invoice.get("taxable_value") or 0)
-    grand_total = float(invoice.get("grand_total") or 0)
 
-    rows = [
-        ["Sub Total", _money(sub_total)],
-        ["Items Discount", _money(total_discount)],
-        ["SGST", _money(total_sgst)],
-        ["CGST", _money(total_cgst)],
-        ["Total", f"Rs. {_money(grand_total)}"],
-    ]
+    rows = [["Sub Total", _money(invoice.taxable_value)]]
+    # "Items Discount" reads invoice.discount_amount directly — a stored line-level
+    # total, not re-accumulated with a per-unit multiplication. The old renderer did
+    # `total_discount += discount * qty`, which is quantity-times too large because
+    # discount_amount is already a per-line amount (finance.py subtracts it once).
+    rows.append(["Items Discount", _money(invoice.discount_amount)])
+    if invoice.is_inter_state:
+        rows.append(["IGST", _money(invoice.igst_amount)])
+    else:
+        rows.append(["SGST", _money(invoice.sgst_amount)])
+        rows.append(["CGST", _money(invoice.cgst_amount)])
+    rows.append(["Total", f"Rs. {_money(invoice.grand_total)}"])
 
     tbl = Table(rows, colWidths=[content_width * 0.35, content_width * 0.15])
     tbl.setStyle(TableStyle([
@@ -263,13 +257,12 @@ def _build_totals_table(invoice, order, total_discount, total_sgst, total_cgst):
     return tbl
 
 
-def _build_footer_table(order, company):
+def _build_footer_table(invoice: Invoice, company: CompanyProfile):
     content_width = PAGE_WIDTH - 2 * MARGIN
-    inv = order.get("invoice_number") or ""
-    company_name = company.legal_name or "Ascend Foods"
-    left = _p(f"<b>{inv}</b> ({company_name})", STYLE_FOOTER_BOLD)
+    supplier_name = invoice.supplier_legal_name or "Ascend Foods"
+    left = _p(f"<b>{invoice.invoice_number or ''}</b> ({supplier_name})", STYLE_FOOTER_BOLD)
     right_lines = [
-        _p(company_name, STYLE_FOOTER),
+        _p(supplier_name, STYLE_FOOTER),
         Spacer(1, 20),
         _p("Authorized Signatory", STYLE_FOOTER),
     ]
@@ -287,20 +280,17 @@ def _build_footer_table(order, company):
     return tbl
 
 
-def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
-    invoice = get_order_invoice_view(db, order_id)
-    order = invoice["order"]
-    company = _company_profile(db)
-    filename = f"{order.get('invoice_number') or f'order-{order_id}'}.pdf"
+def render_invoice_pdf(invoice: Invoice, company: CompanyProfile | None = None) -> BytesIO:
+    """Render a PDF from the `Invoice`/`InvoiceLine` snapshot alone (INV-03).
 
-    created_at = order.get("created_at")
-    if created_at:
-        try:
-            invoice_date = created_at.strftime("%B %d, %Y")
-        except AttributeError:
-            invoice_date = str(created_at)[:10]
-    else:
-        invoice_date = ""
+    `invoice` may be transient — `invoice.id` may still be `None`, and it may not be in
+    any Session at all. Reading only `invoice.*` and `invoice.lines[*].*` (plus the
+    optional, presentation-only `company` for phone/email/footer text) is what makes
+    this callable before `db.add()`, which is exactly where `issue_invoice_for_order`
+    calls it to capture `pdf_sha256` before the row becomes immutable.
+    """
+    if company is None:
+        company = CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC")
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -310,23 +300,29 @@ def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
         rightMargin=MARGIN,
         topMargin=MARGIN,
         bottomMargin=MARGIN,
+        # invariant=1 pins the info-dictionary /CreationDate and /ModDate to a fixed
+        # sentinel and makes the trailer /ID a deterministic function of content.
+        # Verified at planning time: without this flag, two builds of identical content
+        # 1.2s apart differ in exactly those bytes; with it, they are byte-identical.
+        # Do NOT remove this to "fix" a wrong-looking creation date in a PDF viewer —
+        # the legally meaningful date is invoice.invoice_date, printed in the document
+        # body below, not this metadata timestamp.
+        invariant=1,
     )
 
     elements = []
 
-    elements.append(_build_header_table(company))
+    elements.append(_build_header_table(invoice, company))
     elements.append(Spacer(1, 2 * mm))
-    elements.append(_build_order_info_table(order, invoice_date))
+    elements.append(_build_invoice_info_table(invoice))
     elements.append(Spacer(1, 2 * mm))
-    elements.append(_build_address_table(order))
+    elements.append(_build_address_table(invoice))
     elements.append(Spacer(1, 3 * mm))
 
-    items = order.get("items", [])
-    items_tbl, total_discount, total_sgst, total_cgst = _build_items_table(items)
-    elements.append(items_tbl)
+    elements.append(_build_items_table(invoice))
     elements.append(Spacer(1, 2 * mm))
 
-    totals_tbl = _build_totals_table(invoice, order, total_discount, total_sgst, total_cgst)
+    totals_tbl = _build_totals_table(invoice)
     content_width = PAGE_WIDTH - 2 * MARGIN
     wrapper = Table(
         [["", totals_tbl]],
@@ -336,7 +332,7 @@ def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
     elements.append(wrapper)
 
     elements.append(Spacer(1, 4 * mm))
-    elements.append(_build_footer_table(order, company))
+    elements.append(_build_footer_table(invoice, company))
 
     footer_text = company.invoice_footer or "This is a computer generated invoice."
     elements.append(Spacer(1, 2 * mm))
@@ -344,4 +340,15 @@ def generate_invoice_pdf(db: Session, order_id: int) -> tuple[BytesIO, str]:
 
     doc.build(elements)
     buf.seek(0)
+    return buf
+
+
+def regenerate_invoice_pdf(db: Session, invoice: Invoice) -> tuple[BytesIO, str]:
+    """Regenerate a PDF for an already-issued invoice. Goes through the exact same
+    `render_invoice_pdf` code path issue-time rendering uses — if the two ever
+    diverged, the byte-identity test (app/tests/test_invoice_pdf.py) would prove
+    nothing about the real endpoint."""
+    company = _company_profile(db)
+    buf = render_invoice_pdf(invoice, company)
+    filename = f"{invoice.invoice_number}.pdf"
     return buf, filename

@@ -6,6 +6,7 @@ number across an item's CGST/SGST/IGST rows, it does not compute tax itself (D-0
 Nothing in the codebase calls this module yet — plan 02-03 wires `issue_invoice_for_order`
 into the order dispatch transition.
 """
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 
@@ -16,6 +17,7 @@ from app.models import CompanyProfile, Invoice, InvoiceLine, Retailer, SKU, Ware
 from app.models.enums import InvoiceStatus, InvoiceType, SupplyType
 from app.models.invoice import DEFAULT_UQC
 from app.services.finance import calculate_order_item_totals, _round_money
+from app.services.invoice_pdf import render_invoice_pdf
 
 ZERO = Decimal("0")
 
@@ -240,6 +242,16 @@ def issue_invoice_for_order(
     invoice.cess_amount = _round_money(cess_total)
     invoice.total_tax_amount = _round_money(tax_total)
     invoice.grand_total = _round_money(grand_total)
+
+    # Capture the PDF digest from the transient invoice, before db.add. Plan 02-01's
+    # before_update listener raises on any UPDATE to a persisted Invoice, so
+    # pdf_sha256 cannot be filled in after flush — it must be computed now, while
+    # invoice.id is still None. Rendering from a transient object is also the
+    # property that proves the renderer cannot join back to live order data (INV-03).
+    # Let a renderer failure propagate: a dispatch that cannot produce a verifiable
+    # invoice must not silently issue one with a NULL digest.
+    pdf_bytes = render_invoice_pdf(invoice, profile).getvalue()
+    invoice.pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     db.add(invoice)
     db.flush()

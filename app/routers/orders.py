@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.order import create_outgoing_order, update_order_status, get_order_detail, get_order_invoice_view, InsufficientStockError, RetailerAccessError, StatusTransitionForbiddenError
-from app.services.invoice_pdf import generate_invoice_pdf
+from app.services.invoice_pdf import regenerate_invoice_pdf
 from app.services.admin import get_orders_page
 from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceView, OrderListPage
 from app.core.deps import require_roles, get_role_value
@@ -118,10 +118,11 @@ def get_invoice_view(order_id: int, db: Session = Depends(get_db), current_user 
 
 @router.get("/{order_id}/invoice.pdf")
 def get_invoice_pdf(order_id: int, db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER", "SALESMAN"))):
-    try:
-        _ensure_order_access(db, order_id, current_user)
-        output, filename = generate_invoice_pdf(db, order_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    order = _ensure_order_access(db, order_id, current_user)
+    if order.invoice is None:
+        # A legitimate, expected state for any order that has not shipped (D-01) —
+        # returning a PDF with a blank invoice number would be worse than an error.
+        raise HTTPException(status_code=404, detail="No invoice has been issued for this order")
+    output, filename = regenerate_invoice_pdf(db, order.invoice)
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(output, media_type="application/pdf", headers=headers)
