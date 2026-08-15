@@ -92,6 +92,12 @@ class Invoice(Base):
     total_tax_amount = Column(Numeric(12, 2), nullable=False)
     grand_total = Column(Numeric(12, 2), nullable=False)
 
+    # SHA-256 of the PDF rendered at issue time (INV-03 evidence, plan 02-04). Nullable:
+    # invoices created before this column existed, or by a future backfill path, may
+    # legitimately have no digest. This is not a cache — no PDF bytes are stored anywhere
+    # — it is the minimum proof that a regeneration reproduces the issue-time render.
+    pdf_sha256 = Column(String(64), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     order = relationship("Order", back_populates="invoice")
