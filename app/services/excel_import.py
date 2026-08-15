@@ -414,10 +414,8 @@ def _parse_order_status(val) -> OrderStatus:
     if not val:
         return OrderStatus.DELIVERED
     s = str(val).strip().lower()
-    if "cancel" in s:
+    if "cancel" in s or "return" in s:
         return OrderStatus.CANCELLED
-    if "return" in s:
-        return OrderStatus.RETURNED
     return OrderStatus.DELIVERED
 
 
