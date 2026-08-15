@@ -362,7 +362,10 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
     return db_order
 
 def update_order_status(db: Session, order_id: int, status: StatusUpdate, current_user=None):
-    order = db.query(Order).filter(Order.id == order_id).first()
+    # ORD-03: lock this row before reading order.status. Two concurrent callers must not
+    # both pass the legality check below against the same stale status — the loser has to
+    # block here, then see the winner's committed status once unblocked.
+    order = db.query(Order).filter(Order.id == order_id).populate_existing().with_for_update().first()
     if not order:
         raise ValueError("Order not found")
     next_status = status.status
