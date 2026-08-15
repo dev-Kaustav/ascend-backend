@@ -2,7 +2,8 @@
 
 Produces a spreadsheet with **one row per invoice line**, in a documented and versioned
 column set, as XLSX and CSV, built entirely from the immutable `Invoice`/`InvoiceLine`
-snapshot (never from `Order`, `OrderItem`, `SKU` or `Retailer`).
+snapshot. Live order-side models are never touched here (see the module-level source
+comment on `build_invoice_export_rows`).
 
 Contract: `EXPORT_FORMAT_VERSION` and `INVOICE_EXPORT_COLUMNS` below are the contract. The
 header row they produce is pinned by the fixture at

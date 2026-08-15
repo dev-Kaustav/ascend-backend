@@ -38,6 +38,7 @@ from app.services.admin import (
     update_company_profile,
 )
 from app.services.access_rules import list_access_rules, upsert_access_rule, delete_access_rule
+from app.services.invoice_export import export_invoices_xlsx, export_invoices_csv
 from app.schemas.admin import (
     BrandCreate,
     BrandResponse,
@@ -183,6 +184,29 @@ def export_orders_endpoint(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+@router.get("/invoices/export")
+def export_invoices_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER")),
+    format: str = Query("xlsx"),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+):
+    if format == "xlsx":
+        output = export_invoices_xlsx(db, from_date=from_date, to_date=to_date)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ext = "xlsx"
+    elif format == "csv":
+        output = export_invoices_csv(db, from_date=from_date, to_date=to_date)
+        media_type = "text/csv"
+        ext = "csv"
+    else:
+        raise HTTPException(status_code=400, detail="format must be 'xlsx' or 'csv'")
+
+    filename = f"invoices_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{ext}"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(output, media_type=media_type, headers=headers)
 
 @router.get("/summary")
 def get_admin_summary_endpoint(

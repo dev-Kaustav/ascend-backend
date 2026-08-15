@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "columns": [
+    "Invoice Number",
+    "Invoice Date",
+    "Invoice Type",
+    "Reverse Charge",
+    "Supplier GSTIN",
+    "Buyer Name",
+    "Buyer GSTIN",
+    "Place Of Supply",
+    "Order ID",
+    "Line Number",
+    "Description",
+    "HSN",
+    "Quantity",
+    "UQC",
+    "Unit Rate",
+    "Discount Amount",
+    "Taxable Value",
+    "CGST Rate",
+    "CGST Amount",
+    "SGST Rate",
+    "SGST Amount",
+    "IGST Rate",
+    "IGST Amount",
+    "Cess Rate",
+    "Cess Amount",
+    "Line Total",
+    "Invoice Grand Total"
+  ]
+}
