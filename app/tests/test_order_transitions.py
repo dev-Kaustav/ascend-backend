@@ -22,13 +22,18 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import (
+    Brand,
     CreditNote,
+    Employee,
     Inventory,
     InventoryTransaction,
     Invoice,
     OrderTrail,
+    Retailer,
+    SKU,
     SKUBatch,
     User,
+    Warehouse,
 )
 from app.models.enums import EmployeeRole, OrderStatus, TransactionType
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
@@ -173,3 +178,315 @@ def test_forbidden_pairs_deny_every_non_admin_role(frm, to):
     skipped the legality guard in update_order_status."""
     assert (frm, to) not in _MATRIX
     assert roles_for_transition(frm, to) == frozenset()
+
+
+# ---------------------------------------------------------------------------------------
+# Task 2: behavioural end-to-end paths, reserved-status unreachability, and the D5 fence
+# ---------------------------------------------------------------------------------------
+#
+# Seeding helpers duplicated from app/tests/test_invoice_lifecycle.py:19-60 rather than
+# imported — that file's helpers are private, and 03-01's gate forbids editing existing
+# test files. This module keeps its own itertools.count() to unique emails/names.
+
+_seed_counter = itertools.count()
+
+
+def _seed_dispatchable_order(db, quantity=5):
+    """Create a real Warehouse/Retailer/SKU/driver and a PENDING order against them —
+    place_of_supply is NOT NULL on Invoice, so an order dispatched by these tests must
+    resolve to a real retailer state, not a bare id."""
+    n = next(_seed_counter)
+    brand = Brand(name=f"Transitions Brand {n}")
+    warehouse = Warehouse(name=f"Transitions WH {n}", location="Delhi", state="Delhi")
+    retailer = Retailer(name=f"Transitions Retailer {n}", state="Delhi")
+    db.add_all([brand, warehouse, retailer])
+    db.commit()
+
+    sku = SKU(name=f"Transitions SKU {n}", brand_id=brand.id)
+    db.add(sku)
+    db.commit()
+
+    batch = SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=50, remaining_quantity=50)
+    db.add(batch)
+    inventory = Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=50)
+    db.add(inventory)
+    driver = Employee(name=f"Transitions Driver {n}", email=f"transitions-driver-{n}@ascend.com", role=EmployeeRole.DRIVER)
+    user = User(email=f"transitions-admin-{n}@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add_all([driver, user])
+    db.commit()
+
+    order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=quantity, unit_price=100, discount_amount=0)],
+        ),
+        user,
+    )
+    return order, driver, user
+
+
+def _dispatch(db, order, driver):
+    order.delivery_driver_id = driver.id
+    db.commit()
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+    db.refresh(order)
+
+
+def _user(db, role, retailer_id=None):
+    n = next(_seed_counter)
+    user = User(
+        email=f"transitions-user-{n}@ascend.com",
+        password_hash="x",
+        role=role,
+        retailer_id=retailer_id,
+    )
+    db.add(user)
+    db.commit()
+    return user
+
+
+def _walk_order_to(db, order, driver, target, wm, drv_user):
+    """Drive a freshly-seeded PENDING order to `target` using permitted roles."""
+    order.delivery_driver_id = driver.id
+    db.commit()
+    if target == OrderStatus.PENDING:
+        return
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user=wm)
+    if target == OrderStatus.READY_TO_SHIP:
+        return
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
+    if target == OrderStatus.OUT_FOR_DELIVERY:
+        return
+    if target == OrderStatus.DELIVERED:
+        update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), current_user=drv_user)
+        return
+    if target == OrderStatus.CANCELLED:
+        update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=drv_user)
+        return
+    raise AssertionError(f"_walk_order_to cannot reach {target} via a real transition")
+
+
+def test_happy_path_walks_the_full_chain_with_the_right_role_at_each_step(db):
+    order, driver, _seed_user = _seed_dispatchable_order(db)
+    order.delivery_driver_id = driver.id
+    db.commit()
+
+    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user=wm)
+    db.refresh(order)
+    assert order.status == OrderStatus.READY_TO_SHIP
+
+    drv_user = _user(db, EmployeeRole.DRIVER)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
+    db.refresh(order)
+    assert order.status == OrderStatus.OUT_FOR_DELIVERY
+
+    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), current_user=drv_user)
+    db.refresh(order)
+    assert order.status == OrderStatus.DELIVERED
+
+    trails = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).order_by(OrderTrail.id).all()
+    # "Order created" (by _seed_user) + one trail row per transition below.
+    assert len(trails) == 4
+    assert [t.changed_by_id for t in trails[1:]] == [wm.id, drv_user.id, drv_user.id]
+
+
+_CANCEL_CASES = [
+    (OrderStatus.PENDING, EmployeeRole.RETAILER),
+    (OrderStatus.READY_TO_SHIP, EmployeeRole.WAREHOUSE_MANAGER),
+    (OrderStatus.OUT_FOR_DELIVERY, EmployeeRole.DRIVER),
+    (OrderStatus.DELIVERED, EmployeeRole.ADMIN),
+]
+
+
+@pytest.mark.parametrize(
+    "from_status,acting_role",
+    _CANCEL_CASES,
+    ids=[f"{s.value}-by-{r.value}" for s, r in _CANCEL_CASES],
+)
+def test_cancel_is_reachable_from_every_non_terminal_status(db, from_status, acting_role):
+    order, driver, _seed_user = _seed_dispatchable_order(db)
+    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
+    drv_user = _user(db, EmployeeRole.DRIVER)
+    _walk_order_to(db, order, driver, from_status, wm, drv_user)
+    db.refresh(order)
+    assert order.status == from_status
+
+    if acting_role == EmployeeRole.RETAILER:
+        acting_user = _user(db, EmployeeRole.RETAILER, retailer_id=order.to_entity_id)
+    elif acting_role == EmployeeRole.WAREHOUSE_MANAGER:
+        acting_user = wm
+    elif acting_role == EmployeeRole.DRIVER:
+        acting_user = drv_user
+    else:
+        acting_user = _user(db, EmployeeRole.ADMIN)
+
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=acting_user)
+    db.refresh(order)
+    assert order.status == OrderStatus.CANCELLED
+
+
+def test_driver_doorstep_refusal_restores_dispatched_stock_once(db):
+    """The D1 business flow: the driver goes out, the retailer refuses at the doorstep, the
+    goods come back. Single-threaded correctness baseline — the concurrent version is
+    plan 03-03's job, measured against these exact numbers (see SUMMARY.md)."""
+    dispatched_quantity = 5
+    order, driver, _seed_user = _seed_dispatchable_order(db, quantity=dispatched_quantity)
+    _dispatch(db, order, driver)
+
+    warehouse_id = order.from_entity_id
+    sku_id = order.items[0].sku_id
+    inventory = (
+        db.query(Inventory)
+        .filter(Inventory.sku_id == sku_id, Inventory.warehouse_id == warehouse_id)
+        .first()
+    )
+    batch = (
+        db.query(SKUBatch)
+        .filter(SKUBatch.sku_id == sku_id, SKUBatch.warehouse_id == warehouse_id)
+        .first()
+    )
+    stock_before_cancel = inventory.total_quantity
+    batch_remaining_before_cancel = batch.remaining_quantity
+
+    drv_user = _user(db, EmployeeRole.DRIVER)
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=drv_user)
+    db.refresh(inventory)
+    db.refresh(batch)
+
+    assert inventory.total_quantity == stock_before_cancel + dispatched_quantity
+    assert batch.remaining_quantity == batch_remaining_before_cancel + dispatched_quantity
+
+    returns = (
+        db.query(InventoryTransaction)
+        .filter(
+            InventoryTransaction.sku_id == sku_id,
+            InventoryTransaction.warehouse_id == warehouse_id,
+            InventoryTransaction.transaction_type == TransactionType.RETURN,
+        )
+        .all()
+    )
+    assert len(returns) == 1
+    assert returns[0].quantity == dispatched_quantity
+
+
+def test_rejected_transition_changes_nothing(db):
+    order, _driver, _seed_user = _seed_dispatchable_order(db)
+
+    with pytest.raises(ValueError):
+        update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+    db.refresh(order)
+    assert order.status == OrderStatus.PENDING
+    trail_count_after_value_error = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).count()
+
+    drv_user = _user(db, EmployeeRole.DRIVER)
+    with pytest.raises(StatusTransitionForbiddenError):
+        update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=drv_user)
+    db.refresh(order)
+    assert order.status == OrderStatus.PENDING
+    trail_count_after_forbidden_role = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).count()
+
+    # Neither rejection added a trail row beyond the single "Order created" row.
+    assert trail_count_after_value_error == 1
+    assert trail_count_after_forbidden_role == 1
+
+
+_RESERVED_STATUS_REQUEST_KINDS = ["enum", "string"]
+_RESERVED_STATUS_CASES = list(itertools.product(_ALL_STATUSES, _RESERVED_STATUS_REQUEST_KINDS))
+
+
+@pytest.mark.parametrize(
+    "current_status,request_kind",
+    _RESERVED_STATUS_CASES,
+    ids=[f"{s.value}-{k}" for s, k in _RESERVED_STATUS_CASES],
+)
+def test_the_reserved_status_is_unreachable(db, current_status, request_kind):
+    """D1's enforcement. update_order_status coerces strings at order.py:356-360, which is
+    the path the HTTP API actually uses, so both the enum member and the plain string are
+    exercised."""
+    order, driver, _seed_user = _seed_dispatchable_order(db)
+    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
+    drv_user = _user(db, EmployeeRole.DRIVER)
+
+    if current_status == OrderStatus.RETURNED:
+        # Nothing can drive here — RETURNED is unreachable by construction (D1). Plant it.
+        order.status = OrderStatus.RETURNED
+        db.commit()
+    else:
+        _walk_order_to(db, order, driver, current_status, wm, drv_user)
+    db.refresh(order)
+    assert order.status == current_status
+
+    request = (
+        StatusUpdate(status=OrderStatus.RETURNED)
+        if request_kind == "enum"
+        else StatusUpdate(status="RETURNED")
+    )
+    with pytest.raises(ValueError, match="Invalid status transition"):
+        update_order_status(db, order.id, request)
+    db.refresh(order)
+    assert order.status == current_status
+
+
+@pytest.mark.parametrize(
+    "target",
+    _ALL_STATUSES,
+    ids=[s.value for s in _ALL_STATUSES],
+)
+def test_an_order_planted_in_the_reserved_status_can_leave_it_for_nothing(db, target):
+    """Makes D1's reservation enforced rather than assumed: if a future partial-cancellation
+    feature adds an exit from RETURNED, this test fails and forces the decision to be
+    explicit."""
+    order, _driver, _seed_user = _seed_dispatchable_order(db)
+    order.status = OrderStatus.RETURNED
+    db.commit()
+
+    with pytest.raises(ValueError, match="Invalid status transition"):
+        update_order_status(db, order.id, StatusUpdate(status=target.value))
+    db.refresh(order)
+    assert order.status == OrderStatus.RETURNED
+
+
+def test_cancelling_after_dispatch_leaves_the_issued_invoice_untouched(db):
+    """The D5 fence. 03-CONTEXT.md D5 states this is a known, accepted gap awaiting a CA
+    answer: cancelling a dispatched order leaves an issued invoice for goods never
+    supplied. This test's job is to pin the gap's exact shape so it is visible and so
+    nobody closes it by accident — do not read this as a bug to fix.
+    """
+    order, driver, _seed_user = _seed_dispatchable_order(db)
+    _dispatch(db, order, driver)
+
+    invoice_id = order.invoice.id
+    invoice_number = order.invoice.invoice_number
+    invoice_status = order.invoice.status
+    invoice_grand_total = order.invoice.grand_total
+
+    admin = _user(db, EmployeeRole.ADMIN)
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=admin)
+    db.refresh(order)
+
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    assert invoice is not None
+    assert invoice.invoice_number == invoice_number
+    assert invoice.status == invoice_status == "ISSUED"
+    assert invoice.grand_total == invoice_grand_total
+
+    assert db.query(CreditNote).filter(CreditNote.order_id == order.id).count() == 0
+
+
+def test_delivered_orders_always_have_a_delivery_driver(db):
+    """The invariant holds structurally because DELIVERED is reachable only via
+    READY_TO_SHIP, which refuses without a driver (order.py:396-397) — this asserts the
+    invariant rather than adding a redundant second guard (see 03-01-PLAN.md judgement
+    call 2)."""
+    for _ in range(2):
+        order, driver, _seed_user = _seed_dispatchable_order(db)
+        wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
+        drv_user = _user(db, EmployeeRole.DRIVER)
+        _walk_order_to(db, order, driver, OrderStatus.DELIVERED, wm, drv_user)
+        db.refresh(order)
+        assert order.status == OrderStatus.DELIVERED
+        assert order.delivery_driver_id is not None
