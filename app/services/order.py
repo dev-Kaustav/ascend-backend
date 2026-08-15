@@ -18,7 +18,6 @@ from app.models import (
     Employee,
     SKU,
     Warehouse,
-    CompanyProfile,
 )
 from app.models.user import User
 from app.schemas.order import OrderCreate, StatusUpdate
@@ -29,6 +28,7 @@ from app.services.finance import (
     calculate_order_totals,
     _round_money,
 )
+from app.services.invoice import issue_invoice_for_order
 from app.services.transactions import transactional_session
 from app.core.deps import get_role_value
 
@@ -77,30 +77,6 @@ def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> b
     warehouse_state = getattr(warehouse, "state", None)
     retailer_state = getattr(retailer, "state", None)
     return bool(warehouse_state and retailer_state and warehouse_state != retailer_state)
-
-def _get_company_profile_for_update(db: Session) -> CompanyProfile:
-    profile = db.query(CompanyProfile).order_by(CompanyProfile.id.asc()).with_for_update().first()
-    if profile:
-        return profile
-    profile = CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC", invoice_next_number=1)
-    db.add(profile)
-    db.flush()
-    return profile
-
-def _assign_invoice_number(db: Session, order: Order):
-    if order.invoice_number:
-        return
-    profile = _get_company_profile_for_update(db)
-    prefix = (profile.invoice_prefix or "ASC").strip().upper() or "ASC"
-    next_number = int(profile.invoice_next_number or 1)
-    while True:
-        invoice_number = f"{prefix}{next_number:06d}"
-        exists = db.query(Order.id).filter(Order.invoice_number == invoice_number).first()
-        if not exists:
-            order.invoice_number = invoice_number
-            profile.invoice_next_number = next_number + 1
-            return
-        next_number += 1
 
 def _fallback_tax_rate(item) -> Decimal:
     return sum((tax.rate or Decimal("0") for tax in getattr(item, "taxes", []) or []), Decimal("0"))
@@ -331,7 +307,6 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
         )
         db.add(db_order)
         db.flush()
-        _assign_invoice_number(db, db_order)
 
         for item in order.items:
             sku = db.query(SKU).filter(SKU.id == item.sku_id).first()
@@ -424,6 +399,11 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
     elif next_status == OrderStatus.OUT_FOR_DELIVERY:
         order.status = OrderStatus.OUT_FOR_DELIVERY
         _dispatch_reserved_inventory(db, order)
+        # Issue the tax invoice only after dispatch succeeds — a short-picked batch raises
+        # InsufficientStockError above and must not burn an invoice number (D-01). nextval()
+        # is not transactional, so a failure later in this same request still leaves a gap
+        # in the sequence; D-04 accepts gaps and only rejects collisions.
+        issue_invoice_for_order(db, order)
     elif next_status == OrderStatus.DELIVERED:
         order.status = OrderStatus.DELIVERED
         if status.payment_status:
