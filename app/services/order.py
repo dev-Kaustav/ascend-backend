@@ -45,29 +45,50 @@ class StatusTransitionForbiddenError(Exception):
     pass
 
 
-_STATUS_ROLE_MAP = {
-    OrderStatus.READY_TO_SHIP:      {"WAREHOUSE_MANAGER"},
-    OrderStatus.OUT_FOR_DELIVERY:   {"DRIVER"},
-    OrderStatus.DELIVERED:          {"DRIVER"},
-    OrderStatus.RETURNED:           {"WAREHOUSE_MANAGER"},
-    OrderStatus.CANCELLED:          {"ADMIN", "RETAILER"},
+# Single authority for both legality (is this (from, to) pair reachable at all?) and role
+# (which non-admin roles may perform it?). A (from, to) pair absent from this table is an
+# illegal transition; the mapped frozenset is the set of non-admin roles permitted to make
+# it. RETURNED is reserved for a future partial-cancellation feature (D1) and deliberately
+# appears on neither side of any row here.
+_ALLOWED_TRANSITIONS: dict[tuple[OrderStatus, OrderStatus], frozenset[str]] = {
+    (OrderStatus.PENDING, OrderStatus.READY_TO_SHIP): frozenset({"WAREHOUSE_MANAGER"}),
+    (OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY): frozenset({"DRIVER"}),
+    (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED): frozenset({"DRIVER"}),
+    (OrderStatus.PENDING, OrderStatus.CANCELLED): frozenset({"ADMIN", "RETAILER"}),
+    # Retailer included per amended D2 (2026-08-16): a retailer may cancel until the goods
+    # leave — READY_TO_SHIP is picked/assigned but not yet dispatched, so this is still
+    # self-serve. Matches components/orders/RetailerOrders.jsx's existing CANCELLABLE set.
+    (OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
+    (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED): frozenset({"DRIVER", "ADMIN"}),
+    (OrderStatus.DELIVERED, OrderStatus.CANCELLED): frozenset({"ADMIN"}),
 }
+
+
+def allowed_next_statuses(current: OrderStatus) -> frozenset[OrderStatus]:
+    return frozenset(to for (frm, to) in _ALLOWED_TRANSITIONS if frm == current)
+
+
+def roles_for_transition(current: OrderStatus, next_status: OrderStatus) -> frozenset[str]:
+    return _ALLOWED_TRANSITIONS.get((current, next_status), frozenset())
 
 
 def _check_role_for_transition(current_user, next_status: OrderStatus, order: "Order"):
     role = get_role_value(current_user)
+    allowed = roles_for_transition(order.status, next_status)
+    # Blanket admin override, preserved pre-existing behaviour (not a D2 row). The table
+    # enumerates role-specific grants; it does not withdraw admin's ability to advance an
+    # order. See 03-CONTEXT.md judgement call 1.
     if role == "ADMIN":
         return
     if role == "RETAILER":
-        if next_status != OrderStatus.CANCELLED:
-            raise StatusTransitionForbiddenError("Retailer can only cancel orders")
         if not getattr(current_user, "retailer_id", None) or current_user.retailer_id != order.to_entity_id:
             raise StatusTransitionForbiddenError("Order does not belong to your account")
-        return
-    allowed_roles = _STATUS_ROLE_MAP.get(next_status, set())
-    if role not in allowed_roles:
+        # Fall through to the table check below — a retailer is only listed on
+        # (PENDING, CANCELLED) and (READY_TO_SHIP, CANCELLED); any other transition is
+        # denied by the membership check.
+    if role not in allowed:
         raise StatusTransitionForbiddenError(
-            f"Role {role} cannot set status {next_status.value}"
+            f"Role {role} cannot move order from {order.status.value} to {next_status.value}"
         )
 
 def _is_outgoing_order(order: Order) -> bool:
@@ -345,21 +366,13 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
     if not order:
         raise ValueError("Order not found")
     next_status = status.status
-    allowed_transitions = {
-        OrderStatus.PENDING: {OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED},
-        OrderStatus.READY_TO_SHIP: {OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED},
-        OrderStatus.OUT_FOR_DELIVERY: {OrderStatus.DELIVERED, OrderStatus.RETURNED, OrderStatus.CANCELLED},
-        OrderStatus.DELIVERED: {OrderStatus.RETURNED},
-        OrderStatus.RETURNED: set(),
-        OrderStatus.CANCELLED: set(),
-    }
     if isinstance(next_status, str):
         try:
             next_status = OrderStatus(next_status)
         except ValueError:
             raise ValueError("Invalid status transition")
 
-    if next_status not in allowed_transitions.get(order.status, set()):
+    if next_status not in allowed_next_statuses(order.status):
         raise ValueError("Invalid status transition")
 
     if current_user is not None:
@@ -417,7 +430,7 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
                 _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
         elif status.payment_amount is not None:
             _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
-    elif next_status in {OrderStatus.CANCELLED, OrderStatus.RETURNED}:
+    elif next_status == OrderStatus.CANCELLED:
         order.status = next_status
         if previous_status in {OrderStatus.PENDING, OrderStatus.READY_TO_SHIP}:
             _release_reserved_inventory(db, order)
