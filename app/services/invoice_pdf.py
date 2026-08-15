@@ -55,7 +55,7 @@ def _company_profile(db: Session) -> CompanyProfile:
     profile = db.query(CompanyProfile).order_by(CompanyProfile.id.asc()).first()
     if profile:
         return profile
-    return CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC", invoice_next_number=1)
+    return CompanyProfile(legal_name="Ascend Foods", invoice_prefix="ASC")
 
 
 def _build_header_table(company: CompanyProfile):

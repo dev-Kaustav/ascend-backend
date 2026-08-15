@@ -19,5 +19,4 @@ class CompanyProfile(Base):
     phone = Column(String)
     email = Column(String)
     invoice_prefix = Column(String, nullable=False, default="ASC")
-    invoice_next_number = Column(Integer, nullable=False, default=1)
     invoice_footer = Column(String)

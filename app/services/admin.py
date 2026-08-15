@@ -19,6 +19,7 @@ from app.models import (
     OrderItem,
     OrderItemTax,
     CreditNote,
+    Invoice,
     User,
     Permission,
     RolePermission,
@@ -89,7 +90,6 @@ def get_company_profile(db: Session):
     profile = CompanyProfile(
         legal_name="Ascend Foods",
         invoice_prefix="ASC",
-        invoice_next_number=1,
     )
     db.add(profile)
     db.commit()
@@ -244,11 +244,11 @@ def _apply_order_filters(
         except ValueError:
             pass
     if search:
-        query = query.filter(Order.invoice_number.ilike(f"%{search}%"))
+        query = query.filter(Order.invoice.has(Invoice.invoice_number.ilike(f"%{search}%")))
     if has_invoice is True:
-        query = query.filter(Order.invoice_number.isnot(None))
+        query = query.filter(Order.invoice.has())
     if has_invoice is False:
-        query = query.filter(Order.invoice_number.is_(None))
+        query = query.filter(~Order.invoice.has())
 
     from_dt = _parse_date(from_date, False)
     to_dt = _parse_date(to_date, True)

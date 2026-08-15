@@ -261,7 +261,6 @@ class CompanyProfileUpdate(CompanyProfileBase):
 class CompanyProfileResponse(CompanyProfileBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    invoice_next_number: int
 
 class UserCreate(BaseModel):
     email: str

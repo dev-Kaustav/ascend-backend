@@ -15,7 +15,6 @@ class Order(Base):
     to_entity_id = Column(Integer, nullable=False)
     status = Column(Enum(OrderStatus, name="order_status"), default=OrderStatus.PENDING)
     payment_status = Column(Enum(PaymentStatus, name="payment_status"), default=PaymentStatus.CREDIT)
-    invoice_number = Column(String, unique=True)
     beat_id = Column(Integer, ForeignKey("beats.id"), nullable=True)
     salesman_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
     delivery_driver_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
@@ -30,3 +29,9 @@ class Order(Base):
     payments = relationship("Account", back_populates="order", cascade="all, delete-orphan")
     trails = relationship("OrderTrail", backref="order", cascade="all, delete-orphan", order_by="OrderTrail.created_at")
     invoice = relationship("Invoice", back_populates="order", uselist=False)
+
+    @property
+    def invoice_number(self):
+        """Read-only. Resolves through the Invoice relationship (D-05) — an order may
+        legitimately have no invoice until it is dispatched (D-01)."""
+        return self.invoice.invoice_number if self.invoice else None
