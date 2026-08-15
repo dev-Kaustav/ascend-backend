@@ -484,6 +484,9 @@ def _serialize_order(db: Session, order: Order) -> dict:
             "credit_note_number": note.credit_note_number,
             "applies_to_outstanding": note.applies_to_outstanding,
             "created_at": note.created_at,
+            "invoice_id": note.invoice_id,
+            "original_invoice_number": note.original_invoice_number,
+            "original_invoice_date": note.original_invoice_date,
             "items": [
                 {
                     "id": item.id,

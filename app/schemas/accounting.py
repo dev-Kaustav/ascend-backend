@@ -70,6 +70,11 @@ class CreditNoteResponse(BaseModel):
     credit_note_number: str
     items: list[CreditNoteItemResponse]
     created_at: Optional[datetime] = None
+    invoice_id: Optional[int] = None
+    original_invoice_number: Optional[str] = None
+    original_invoice_date: Optional[datetime] = None
+    note_type: Optional[str] = None
+    note_date: Optional[datetime] = None
 
 class CreditNoteListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -78,6 +83,9 @@ class CreditNoteListResponse(BaseModel):
     credit_note_number: str
     created_at: Optional[datetime] = None
     amount: Optional[float] = None
+    invoice_id: Optional[int] = None
+    original_invoice_number: Optional[str] = None
+    original_invoice_date: Optional[datetime] = None
 
 class CreditNotePage(BaseModel):
     items: list[CreditNoteListResponse]

@@ -139,9 +139,19 @@ def create_credit_note(db: Session, credit_note: CreditNoteCreate):
             raise ValueError("Credit quantity exceeds original")
 
     with transactional_session(db):
+        # Reference the invoice this credit note reverses (INV-06). order.invoice is
+        # read-only here — the invoice is immutable and the ORM guard would raise on any
+        # write. order.invoice is None for the pre-invoice paths (direct-status test
+        # fixtures, imported rows with no bill number); the reference is left NULL there.
+        invoice = order.invoice
         db_credit_note = CreditNote(
             order_id=credit_note.order_id,
-            credit_note_number=f"CN-{order.id}-{len(order.credit_notes) + 1}"
+            credit_note_number=f"CN-{order.id}-{len(order.credit_notes) + 1}",
+            invoice_id=invoice.id if invoice else None,
+            original_invoice_number=invoice.invoice_number if invoice else None,
+            original_invoice_date=invoice.invoice_date if invoice else None,
+            note_type="C",
+            note_date=datetime.utcnow(),
         )
         db.add(db_credit_note)
         db.flush()
