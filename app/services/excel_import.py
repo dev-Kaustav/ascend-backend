@@ -3,13 +3,14 @@ from datetime import datetime, date, time as dtime
 
 from sqlalchemy.orm import Session
 
-from app.models import Brand, Beat, Retailer, Warehouse, SKU, Employee, Order, Account, OrderTrail
+from app.models import Brand, Beat, Retailer, Warehouse, SKU, Employee, Order, Account, OrderTrail, Invoice
 
 
 class _ImportAbort(Exception):
     pass
 from app.models.enums import EmployeeRole, OrderStatus, PaymentStatus, PaymentMode, IssueCategory
 from app.services.excel_template import SHEET_HEADERS
+from app.services.invoice import issue_invoice_for_order
 from app.services.transactions import transactional_session
 
 
@@ -706,7 +707,6 @@ def ingest_daily_sales_workbook(db: Session, wb, warehouse_id: int, current_user
                     to_entity_id=retailer.id,
                     status=status,
                     payment_status=payment_status,
-                    invoice_number=bill_no,
                     beat_id=beat.id if beat else None,
                     delivery_driver_id=driver.id if driver else None,
                     delivery_date=order_date if status == OrderStatus.DELIVERED else None,
@@ -718,6 +718,14 @@ def ingest_daily_sales_workbook(db: Session, wb, warehouse_id: int, current_user
                 db.add(db_order)
                 db.flush()
                 orders_created += 1
+
+                # This importer creates no OrderItem rows for these summary-level bills, so
+                # there is no item-ordering constraint to respect — issue immediately after
+                # the order flush. A historical bill number is an externally assigned
+                # identity, not a candidate for the sequence (D-04); it is dated when the
+                # supply happened (order_date), not now.
+                if bill_no:
+                    issue_invoice_for_order(db, db_order, invoice_number=bill_no, invoice_date=order_date)
 
                 db.add(OrderTrail(
                     order_id=db_order.id,
@@ -748,7 +756,10 @@ def ingest_daily_sales_workbook(db: Session, wb, warehouse_id: int, current_user
                 if not amount or amount <= 0:
                     continue
 
-                order = bill_cache.get(bill_no) or db.query(Order).filter(Order.invoice_number == bill_no).first()
+                order = bill_cache.get(bill_no)
+                if order is None:
+                    matched_invoice = db.query(Invoice).filter(Invoice.invoice_number == bill_no).first()
+                    order = matched_invoice.order if matched_invoice else None
                 if not order:
                     errors.append({"sheet": "Recovery", "row": row_num, "error": f"Bill {bill_no} not found"})
                     continue

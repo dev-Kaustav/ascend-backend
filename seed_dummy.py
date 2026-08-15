@@ -8,13 +8,14 @@ import re
 
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
-from app.models import Brand, Warehouse, Employee, Retailer, SKU, User, Order, SKUBatch, Inventory, OrderItem, OrderItemTax
+from app.models import Brand, Warehouse, Employee, Retailer, SKU, User, Order, SKUBatch, Inventory, OrderItem, OrderItemTax, Invoice
 from app.models.enums import EmployeeRole, OrderStatus
 from app.schemas.accounting import CreditNoteCreate, CreditNoteItemCreate, PaymentCreate
 from app.schemas.admin import InventoryReceiptCreate, InventoryReceiptItem
 from app.schemas.order import OrderCreate, OrderItemCreate, OrderItemTaxCreate, StatusUpdate
 from app.services.accounting import create_credit_note, create_payment
 from app.services.admin import add_inventory_receipt
+from app.services.invoice import issue_invoice_for_order
 from app.services.order import create_outgoing_order, InsufficientStockError, update_order_status
 
 
@@ -523,7 +524,7 @@ def main():
     created_orders = 0
     topup_batches = 0
     for idx, order_data in enumerate(ORDERS):
-        if db.query(Order).filter(Order.invoice_number == order_data["invoice"]).first():
+        if db.query(Invoice).filter(Invoice.invoice_number == order_data["invoice"]).first():
             continue
         salesman = salesmen.get(order_data["salesman"], default_salesman)
         salesman_user = salesman_users.get(order_data["salesman"], admin_user)
@@ -579,15 +580,24 @@ def main():
         except InsufficientStockError:
             continue
 
-        if not order.invoice_number:
-            order.invoice_number = order_data["invoice"]
-            db.commit()
+        order_date = today - timedelta(days=(idx * 12 + 5))
+        # issue_invoice_for_order is idempotent (returns the existing invoice if already
+        # issued), so no separate guard is needed here — a scripted historical invoice
+        # number is an externally assigned identity, dated when the supply happened.
+        issue_invoice_for_order(
+            db, order, invoice_number=order_data["invoice"],
+            invoice_date=datetime.combine(order_date, datetime.min.time()),
+        )
+        db.commit()
 
+        # NOTE: this CONFIRMED transition predates this phase and already raises today —
+        # "CONFIRMED" is not a member of OrderStatus, nor a legal transition from PENDING
+        # (app/services/order.py:373-380). Fixing the order-lifecycle state machine is
+        # Phase 3's scope (D-07); only the invoice references above were brought into line.
         update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"))
         if "DELIVERED" in order_data["delivery_status"].upper():
             update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
 
-        order_date = today - timedelta(days=(idx * 12 + 5))
         order.created_at = datetime.combine(order_date, datetime.min.time())
         db.commit()
 
@@ -613,7 +623,7 @@ def main():
         retailer = candidates[(offset + salesman_idx) % len(candidates)]
         warehouse = warehouses[salesman_idx % len(warehouses)]
         invoice_number = f"INV{order_date.strftime('%y%m%d')}{salesman_idx:02d}{offset % 9}"
-        if db.query(Order).filter(Order.invoice_number == invoice_number).first():
+        if db.query(Invoice).filter(Invoice.invoice_number == invoice_number).first():
             continue
 
         items = []
@@ -652,10 +662,14 @@ def main():
         except InsufficientStockError:
             continue
 
+        # Same pre-existing CONFIRMED breakage as the block above (D-07: out of scope here).
         update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"))
         if offset % 6 != 0:
             update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
-        order.invoice_number = invoice_number
+        issue_invoice_for_order(
+            db, order, invoice_number=invoice_number,
+            invoice_date=datetime.combine(order_date, datetime.min.time()),
+        )
         order.created_at = datetime.combine(order_date, datetime.min.time())
         db.commit()
         created_orders += 1
