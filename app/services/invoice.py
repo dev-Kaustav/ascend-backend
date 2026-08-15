@@ -149,6 +149,13 @@ def issue_invoice_for_order(
 
     invoice = Invoice(
         order=order,
+        # Set explicitly rather than relying on the relationship's FK sync, which the
+        # ORM only performs at flush time. render_invoice_pdf is called below on this
+        # still-transient invoice (before db.add/flush, per D-06), and its "Order ID"
+        # line would otherwise read None here and the real id after a later flush —
+        # a real byte-identity break between the issue-time render and any
+        # regeneration, caught by plan 02-04's own test suite.
+        order_id=order.id,
         invoice_date=invoice_date or datetime.utcnow(),
         status=InvoiceStatus.ISSUED.value,
         invoice_type=InvoiceType.B2B.value if buyer_gstin else InvoiceType.B2C.value,
