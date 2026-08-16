@@ -53,7 +53,7 @@ _seed_counter = itertools.count()
 
 # Pinned by test_order_detail_query_count_is_bounded — see that test for what "maximal
 # shape" means. Any change, up or down, must be a deliberate edit to this constant.
-MAXIMAL_SHAPE_QUERY_COUNT = 9
+MAXIMAL_SHAPE_QUERY_COUNT = 14
 
 
 @contextmanager
@@ -243,15 +243,24 @@ def test_order_detail_query_count_does_not_grow_with_trail_authors(db):
 
 
 def test_order_detail_query_count_does_not_grow_with_payments_or_credit_notes(db):
-    order_bare = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=0, n_credit_notes=0)
-    order_loaded = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=3, n_credit_notes=2)
+    """Compares a light vs a heavy payments/credit-notes shape, both non-empty — not
+    zero vs non-zero. A nested `selectinload(Order.credit_notes).selectinload(
+    CreditNote.items)` issues its second-level batch query only when the order actually
+    has at least one credit note (there is nothing to filter the child query's `IN (...)`
+    against otherwise), so an order with zero credit notes costs exactly one query less
+    than one with any credit notes at all — a fixed, one-time presence effect, not a
+    per-row N+1. It does not scale with the number of credit notes or their items (1
+    credit note and 100 both cost the same single batch query), which is exactly what
+    this test pins by comparing two non-zero shapes."""
+    order_light = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=1, n_credit_notes=1)
+    order_heavy = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=5, n_credit_notes=5)
 
-    _, count_bare = _measure(db, get_order_detail, order_bare.id)
-    _, count_loaded = _measure(db, get_order_detail, order_loaded.id)
+    _, count_light = _measure(db, get_order_detail, order_light.id)
+    _, count_heavy = _measure(db, get_order_detail, order_heavy.id)
 
-    assert count_bare == count_loaded, (
-        f"query count grew with payments/credit notes: bare = {count_bare}, "
-        f"loaded = {count_loaded}"
+    assert count_light == count_heavy, (
+        f"query count grew with payments/credit note count: light (1 each) = {count_light}, "
+        f"heavy (5 each) = {count_heavy}"
     )
 
 

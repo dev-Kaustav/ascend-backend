@@ -1,6 +1,6 @@
 from datetime import datetime, date, time as dtime
 from decimal import Decimal
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import and_
 
 from app.models import (
@@ -15,6 +15,7 @@ from app.models import (
     InventoryTransaction,
     Retailer,
     Account,
+    CreditNote,
     Employee,
     SKU,
     Warehouse,
@@ -451,12 +452,29 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
     db.commit()
     return order
 
+def _order_detail_query(db: Session):
+    """Eager-load the relationship graph one order's serialization walks, in a fixed
+    number of statements regardless of how many items/payments/credit notes/trails the
+    order has (ORD-04). Uses selectin-style batched loading — these are all
+    one-to-many collections, and a join-based eager load would fan the result set out
+    into a cartesian product across four collections."""
+    return db.query(Order).options(
+        selectinload(Order.items).selectinload(OrderItem.taxes),
+        selectinload(Order.payments),
+        selectinload(Order.credit_notes).selectinload(CreditNote.items),
+        selectinload(Order.trails),
+    )
+
 def _serialize_order(db: Session, order: Order) -> dict:
     warehouse = db.query(Warehouse).filter(Warehouse.id == order.from_entity_id).first()
     retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
     beat = db.query(Beat).filter(Beat.id == order.beat_id).first() if order.beat_id else None
-    salesman = db.query(Employee).filter(Employee.id == order.salesman_id).first() if order.salesman_id else None
-    driver = db.query(Employee).filter(Employee.id == order.delivery_driver_id).first() if order.delivery_driver_id else None
+    employee_ids = {eid for eid in (order.salesman_id, order.delivery_driver_id) if eid}
+    employee_map = {}
+    if employee_ids:
+        employee_map = {e.id: e for e in db.query(Employee).filter(Employee.id.in_(employee_ids)).all()}
+    salesman = employee_map.get(order.salesman_id) if order.salesman_id else None
+    driver = employee_map.get(order.delivery_driver_id) if order.delivery_driver_id else None
     sku_ids = [item.sku_id for item in order.items]
     sku_map = {sku.id: sku for sku in db.query(SKU).filter(SKU.id.in_(sku_ids)).all()} if sku_ids else {}
     totals = calculate_order_totals(order)
@@ -518,10 +536,17 @@ def _serialize_order(db: Session, order: Order) -> dict:
     trail_user_ids = {t.changed_by_id for t in order.trails if t.changed_by_id}
     trail_user_map = {}
     if trail_user_ids:
-        users = db.query(User).filter(User.id.in_(trail_user_ids)).all()
-        for u in users:
-            emp = db.query(Employee).filter(Employee.id == u.employee_id).first() if u.employee_id else None
-            trail_user_map[u.id] = emp.name if emp else u.email
+        # outerjoin, not join: a user with no employee_id, or one pointing at a deleted
+        # row, must still resolve to their email — an inner join would silently drop
+        # those authors and their trail entries would render changed_by_name: null.
+        rows = (
+            db.query(User.id, User.email, Employee.name)
+            .outerjoin(Employee, Employee.id == User.employee_id)
+            .filter(User.id.in_(trail_user_ids))
+            .all()
+        )
+        for user_id, email, employee_name in rows:
+            trail_user_map[user_id] = employee_name or email
     trails = [
         {
             "id": t.id,
@@ -574,13 +599,13 @@ def _serialize_order(db: Session, order: Order) -> dict:
     }
 
 def get_order_detail(db: Session, order_id: int):
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = _order_detail_query(db).filter(Order.id == order_id).first()
     if not order:
         raise ValueError("Order not found")
     return _serialize_order(db, order)
 
 def get_order_invoice_view(db: Session, order_id: int):
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = _order_detail_query(db).filter(Order.id == order_id).first()
     if not order:
         raise ValueError("Order not found")
     totals = calculate_order_totals(order)
