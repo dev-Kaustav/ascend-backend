@@ -288,3 +288,88 @@ def test_two_concurrent_cancels_restore_inventory_once(SessionLocal):
             verify.close()
     finally:
         _purge(SessionLocal, ids)
+
+
+def test_cancel_racing_deliver_adjusts_inventory_once(SessionLocal):
+    """T-03-11 / T-03-12: cancel racing deliver, both from OUT_FOR_DELIVERY. The outcome is
+    genuinely non-deterministic and both orderings are valid — asserting a specific winner
+    would make this test flaky, which is worse than not having it at all:
+
+    - If CANCELLED commits first, DELIVERED's locked re-read sees CANCELLED, which has no
+      legal successor (D1), so it raises ValueError("Invalid status transition"). Final
+      status is CANCELLED; one restoration happened.
+    - If DELIVERED commits first, CANCELLED's locked re-read sees DELIVERED. Per D2,
+      DELIVERED -> CANCELLED is legal (admin only), so the cancel succeeds and restores
+      stock once.
+
+    Either ordering: final status is CANCELLED, inventory is adjusted exactly once, and at
+    most one worker raises. Do not tighten these assertions to pin an ordering — that would
+    make a correct, order-independent guarantee look flaky.
+    """
+    ids = _seed_dispatched_order(SessionLocal)
+    try:
+        session_a = SessionLocal()
+        session_b = SessionLocal()
+        try:
+            admin_a = session_a.query(User).filter(User.id == ids["admin_id"]).first()
+            admin_b = session_b.query(User).filter(User.id == ids["admin_id"]).first()
+
+            barrier = threading.Barrier(2)
+
+            def worker(session, admin, target_status):
+                barrier.wait()
+                try:
+                    update_order_status(
+                        session, ids["order_id"], StatusUpdate(status=target_status), admin
+                    )
+                    return None
+                except Exception as exc:  # noqa: BLE001 - collected, not raised, from the thread
+                    return exc
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_cancel = pool.submit(worker, session_a, admin_a, "CANCELLED")
+                future_deliver = pool.submit(worker, session_b, admin_b, "DELIVERED")
+                outcome_cancel = future_cancel.result()
+                outcome_deliver = future_deliver.result()
+        finally:
+            session_a.close()
+            session_b.close()
+
+        outcomes = [outcome_cancel, outcome_deliver]
+        failures = [o for o in outcomes if o is not None]
+        assert len(failures) <= 1, f"at most one worker should fail, got outcomes: {outcomes}"
+        for failure in failures:
+            assert isinstance(failure, ValueError)
+            assert str(failure) == "Invalid status transition"
+
+        verify = SessionLocal()
+        try:
+            order = verify.query(Order).filter(Order.id == ids["order_id"]).first()
+            inventory = (
+                verify.query(Inventory)
+                .filter(Inventory.sku_id == ids["sku_id"], Inventory.warehouse_id == ids["warehouse_id"])
+                .first()
+            )
+            batch = verify.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
+            returns = (
+                verify.query(InventoryTransaction)
+                .filter(
+                    InventoryTransaction.sku_id == ids["sku_id"],
+                    InventoryTransaction.warehouse_id == ids["warehouse_id"],
+                    InventoryTransaction.transaction_type == TransactionType.RETURN,
+                )
+                .all()
+            )
+
+            # Both orderings land here: DELIVERED->CANCELLED is legal for admin (D2), and
+            # CANCELLED beats DELIVERED outright when it commits first.
+            assert order.status is OrderStatus.CANCELLED
+            assert inventory.total_quantity == 50, (
+                f"expected exactly one net adjustment back to 50, got {inventory.total_quantity}"
+            )
+            assert batch.remaining_quantity == 50
+            assert len(returns) == 1, f"expected exactly one RETURN transaction, got {len(returns)}"
+        finally:
+            verify.close()
+    finally:
+        _purge(SessionLocal, ids)
