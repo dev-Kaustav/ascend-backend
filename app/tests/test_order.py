@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from app.services.order import create_outgoing_order, update_order_status, InsufficientStockError
+from app.services import inventory as inventory_service
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.core.security import create_access_token
 from app.models import SKU, SKUBatch, Inventory, User, Brand, Retailer, Warehouse
@@ -17,17 +18,21 @@ def test_fefo_allocation(db):
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.commit()
+    # D1: dates derived from the injected seam, never pinned to an absolute
+    # calendar date — an absolute past date here would become expired,
+    # unallocatable stock and silently invert what this test claims to prove.
+    today = inventory_service.current_business_date()
     batch_early = SKUBatch(
         sku_id=sku.id,
         warehouse_id=warehouse.id,
-        expiry_date=date(2024, 1, 1),
+        expiry_date=today + timedelta(days=30),
         quantity_received=5,
         remaining_quantity=5
     )
     batch_late = SKUBatch(
         sku_id=sku.id,
         warehouse_id=warehouse.id,
-        expiry_date=date(2024, 6, 1),
+        expiry_date=today + timedelta(days=90),
         quantity_received=10,
         remaining_quantity=10
     )
