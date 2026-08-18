@@ -263,7 +263,21 @@ def _restore_dispatched_inventory(db: Session, order: Order):
             #   row cannot actually vanish — but the sibling function guards its read and
             #   this one did not, which made the two impossible to tell apart by inspection.
             #   Now both read the same way.
-            batch = db.query(SKUBatch).filter(SKUBatch.id == batch_link.batch_id).with_for_update().first()
+            # populate_existing() is required, not decorative: if this session already holds
+            # this SKUBatch in its identity map (e.g. something upstream walked
+            # batch_link.batch before reaching cancel), a bare with_for_update() still takes
+            # the row lock at the SQL level but SQLAlchemy will *not* overwrite the
+            # already-loaded Python attributes with the freshly locked row's values — it
+            # silently keeps serving the stale in-memory copy. That is precisely the
+            # instance-vs-current-row gap this task closes, and it is the same pattern
+            # update_order_status already uses at :398 (populate_existing().with_for_update()).
+            batch = (
+                db.query(SKUBatch)
+                .filter(SKUBatch.id == batch_link.batch_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
             if batch:
                 batch.remaining_quantity += batch_link.quantity
             inventory = db.query(Inventory).filter(
