@@ -26,8 +26,17 @@ If PostgreSQL is unreachable, this module fails loudly by default (see `_connect
 in `pg_utils`-pattern below, copied from `test_invoice_sequence_pg.py`). A silently skipping
 concurrency test is a green tick over an unproven guarantee (T-03-17). Set
 ASCEND_ALLOW_PG_SKIP=1 to allow a skip instead.
+
+Phase 4 (04-04-PLAN.md, INVT-01) adds two more cases below, both about
+`_restore_dispatched_inventory`'s batch read specifically: `_restore_dispatched_inventory`
+was the only one of the four inventory functions reading `sku_batches` without
+`with_for_update()`. These two cases are deterministic, not threaded, on purpose: the
+window being closed sits between one SELECT and one UPDATE inside a single call, which a
+thread-and-barrier test cannot target reliably — a race that cannot be aimed at is not
+evidence of anything, and a flaky test is worse than none (04-CONTEXT.md R7).
 """
 
+import inspect
 import os
 import threading
 import uuid
@@ -44,6 +53,8 @@ from app.models import (
     Inventory,
     InventoryTransaction,
     Order,
+    OrderItem,
+    OrderItemBatch,
     OrderTrail,
     Retailer,
     SKU,
@@ -53,7 +64,14 @@ from app.models import (
 )
 from app.models.enums import EmployeeRole, OrderStatus, TransactionType
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
-from app.services.order import _dispatch_reserved_inventory, create_outgoing_order, update_order_status
+from app.services.order import (
+    _dispatch_reserved_inventory,
+    _reserve_inventory_for_order,
+    _release_reserved_inventory,
+    _restore_dispatched_inventory,
+    create_outgoing_order,
+    update_order_status,
+)
 
 
 def _connect_or_skip():
@@ -373,3 +391,97 @@ def test_cancel_racing_deliver_adjusts_inventory_once(SessionLocal):
             verify.close()
     finally:
         _purge(SessionLocal, ids)
+
+
+def test_restore_uses_the_current_batch_row_not_a_previously_loaded_one(SessionLocal):
+    """T-04-15 (04-04-PLAN.md, INVT-01), deterministic by design — see the module docstring
+    for why this is not a threaded race test.
+
+    Three sessions, no threads. Before this plan's fix, `_restore_dispatched_inventory`
+    dereferenced `batch_link.batch`, the lazy relationship: if that `SKUBatch` was already
+    sitting in the session's identity map, the increment was computed off whatever Python
+    already held, silently discarding any commit that landed on the row in between. After
+    the fix — `populate_existing().with_for_update()` — the query forces a fresh, locked
+    read of the row regardless of what the session cached earlier.
+    """
+    ids = _seed_dispatched_order(SessionLocal, quantity=5)
+    try:
+        # Session A: load the order, then walk into the batch through the ORM relationship
+        # once, exactly the way the old code did — so this session's identity map holds a
+        # SKUBatch with remaining_quantity == 45. Do not commit; leave the session open.
+        # This models any code path that has already touched the batch before reaching the
+        # cancel.
+        session_a = SessionLocal()
+        admin_a = session_a.query(User).filter(User.id == ids["admin_id"]).first()
+        order_a = session_a.query(Order).filter(Order.id == ids["order_id"]).first()
+        touched_batch = order_a.items[0].order_item_batches[0].batch
+        assert touched_batch.remaining_quantity == 45, (
+            "seeding baseline: dispatch must drop remaining_quantity to 45"
+        )
+
+        try:
+            # Session B: an independent connection, commits a further -5 while session A's
+            # cached copy still reads 45 — another order dispatched five units in between.
+            session_b = SessionLocal()
+            try:
+                session_b.execute(
+                    text("UPDATE sku_batches SET remaining_quantity = remaining_quantity - 5 WHERE id = :id"),
+                    {"id": ids["batch_id"]},
+                )
+                session_b.commit()
+            finally:
+                session_b.close()
+
+            # Session A again: cancel through the real service call. Before this plan's fix
+            # this would add 5 to the stale cached 45 and overwrite session B's committed
+            # decrement on flush, landing the row at 50. After the fix it re-reads the row
+            # under lock (now 40, session B's commit) and adds 5 — landing at 45.
+            update_order_status(session_a, ids["order_id"], StatusUpdate(status="CANCELLED"), admin_a)
+        finally:
+            session_a.close()
+
+        # Session C: fresh session, nothing cached anywhere.
+        session_c = SessionLocal()
+        try:
+            batch = session_c.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
+            # 40 (session B's committed value) + 5 (this restore) == 45: the current row
+            # plus the restored units, not 50 (the stale 45 session A had cached, plus 5).
+            assert batch.remaining_quantity == 45
+
+            returns = (
+                session_c.query(InventoryTransaction)
+                .filter(
+                    InventoryTransaction.sku_id == ids["sku_id"],
+                    InventoryTransaction.warehouse_id == ids["warehouse_id"],
+                    InventoryTransaction.transaction_type == TransactionType.RETURN,
+                )
+                .all()
+            )
+            assert len(returns) == 1, f"expected exactly one RETURN transaction, got {len(returns)}"
+            assert returns[0].quantity == ids["dispatched_quantity"]
+
+            rows = (
+                session_c.query(OrderItemBatch)
+                .join(OrderItem, OrderItem.id == OrderItemBatch.order_item_id)
+                .filter(OrderItem.order_id == ids["order_id"])
+                .all()
+            )
+            assert len(rows) == 1, "restore must keep its OrderItemBatch rows (04-04-PLAN.md Task 1 verdict)"
+        finally:
+            session_c.close()
+    finally:
+        _purge(SessionLocal, ids)
+
+
+def test_all_four_inventory_functions_lock_the_batch_row():
+    """Structural regression guard for T-04-15: no database needed, but this belongs beside
+    the behavioural case above. Fails the moment someone reintroduces an unserialised read
+    of sku_batches into any of the four inventory functions."""
+    for fn in (
+        _reserve_inventory_for_order,
+        _dispatch_reserved_inventory,
+        _release_reserved_inventory,
+        _restore_dispatched_inventory,
+    ):
+        source = inspect.getsource(fn)
+        assert "with_for_update()" in source, f"{fn.__name__} does not lock its sku_batches read"
