@@ -229,6 +229,7 @@ class InventoryResponse(BaseModel):
     total_quantity: float
     reserved_quantity: float = 0
     earliest_expiry: Optional[date] = None
+    expired_quantity: int = 0
 
 class InventoryPage(BaseModel):
     items: list[InventoryResponse]

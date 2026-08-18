@@ -43,6 +43,7 @@ from app.models.enums import TransactionType, OrderStatus, EmployeeRole, Payment
 from app.services.transactions import transactional_session
 from app.core.security import get_password_hash
 from app.services.finance import calculate_order_outstanding
+from app.services import inventory as inventory_service
 
 def create_brand(db: Session, brand: BrandCreate):
     db_brand = Brand(**brand.dict())
@@ -183,17 +184,43 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
         .subquery()
     )
 
+    # D1: expired_quantity is the same predicate the allocator refuses on
+    # (app/services/inventory.py). Reusing expired_batch_criterion here rather
+    # than re-deriving the date comparison keeps what the screen calls
+    # "expired" identical to what allocation will not touch.
+    as_of = inventory_service.current_business_date()
+    expired_query = (
+        db.query(
+            SKUBatch.sku_id.label("sku_id"),
+            SKUBatch.warehouse_id.label("warehouse_id"),
+            func.sum(SKUBatch.remaining_quantity).label("expired_quantity"),
+        )
+        .filter(inventory_service.expired_batch_criterion(as_of))
+    )
+    if warehouse_id:
+        expired_query = expired_query.filter(SKUBatch.warehouse_id == warehouse_id)
+    expired_subquery = (
+        expired_query
+        .group_by(SKUBatch.sku_id, SKUBatch.warehouse_id)
+        .subquery()
+    )
+
     base_query = db.query(Inventory)
     if warehouse_id:
         base_query = base_query.filter(Inventory.warehouse_id == warehouse_id)
     total = base_query.count()
     rows = (
         base_query
-        .with_entities(Inventory, expiry_subquery.c.earliest_expiry)
+        .with_entities(Inventory, expiry_subquery.c.earliest_expiry, expired_subquery.c.expired_quantity)
         .outerjoin(
             expiry_subquery,
             (expiry_subquery.c.sku_id == Inventory.sku_id)
             & (expiry_subquery.c.warehouse_id == Inventory.warehouse_id),
+        )
+        .outerjoin(
+            expired_subquery,
+            (expired_subquery.c.sku_id == Inventory.sku_id)
+            & (expired_subquery.c.warehouse_id == Inventory.warehouse_id),
         )
         .order_by(Inventory.warehouse_id.asc(), Inventory.sku_id.asc())
         .limit(limit)
@@ -208,8 +235,9 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
             "total_quantity": round(float(inventory.total_quantity or 0), 2),
             "reserved_quantity": round(float(inventory.reserved_quantity or 0), 2),
             "earliest_expiry": earliest_expiry,
+            "expired_quantity": int(expired_quantity or 0),
         }
-        for inventory, earliest_expiry in rows
+        for inventory, earliest_expiry, expired_quantity in rows
     ]
     return items, total
 
