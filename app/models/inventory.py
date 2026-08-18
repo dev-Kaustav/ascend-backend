@@ -3,6 +3,10 @@ from sqlalchemy import CheckConstraint, Column, Integer, ForeignKey
 from app.db.base import Base
 
 class Inventory(Base):
+    """One row per (sku, warehouse): physical stock aggregated across that sku's batches
+    at that warehouse. INVT-03: see docs/inventory-invariants.md for invariants I1-I5 and
+    the full write-path citations — the comments below must match that document word for
+    word."""
     __tablename__ = "inventory"
     # INVT-02 / D4: the database's own floors on stock quantities — not a restatement of
     # the service-layer guards in app/services/order.py, which are bypassable by raw SQL,
@@ -15,5 +19,9 @@ class Inventory(Base):
 
     sku_id = Column(Integer, ForeignKey("skus.id"), primary_key=True)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), primary_key=True)
+    # Physical units on hand across all batches of this sku at this warehouse. Same
+    # physical concept as SKUBatch.remaining_quantity, one grain up.
     total_quantity = Column(Integer, default=0, nullable=False)
+    # Subset of total_quantity claimed by orders not yet dispatched. A subset, not an
+    # addition.
     reserved_quantity = Column(Integer, default=0, nullable=False)
