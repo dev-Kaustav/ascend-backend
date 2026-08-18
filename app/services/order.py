@@ -32,6 +32,10 @@ from app.services.finance import (
 from app.services.invoice import issue_invoice_for_order
 from app.services.transactions import transactional_session
 from app.core.deps import get_role_value
+# Module-qualified import (not a from-import): current_business_date is looked
+# up at call time as inventory_service.current_business_date(), which is what
+# lets tests monkeypatch the seam (D1).
+from app.services import inventory as inventory_service
 
 
 class InsufficientStockError(Exception):
@@ -126,6 +130,10 @@ def _tax_rows_for_item(sku: SKU | None, item, inter_state: bool) -> list[dict]:
 
 def _reserve_inventory_for_order(db: Session, order: Order):
     warehouse_id = order.from_entity_id
+    # Resolved once per call, not once per batch, so a call that straddles
+    # midnight cannot allocate against two different definitions of "today"
+    # within a single order (D1).
+    as_of = inventory_service.current_business_date()
     for item in order.items:
         allocated_qty = sum(batch.quantity for batch in item.order_item_batches)
         if allocated_qty >= item.quantity:
@@ -135,6 +143,12 @@ def _reserve_inventory_for_order(db: Session, order: Order):
             Inventory.warehouse_id == warehouse_id
         ).with_for_update().first()
         available_inventory = (inventory.total_quantity or 0) - (inventory.reserved_quantity or 0) if inventory else 0
+        # This aggregate pre-check counts expired units, so an order can pass
+        # here and still run out of allocatable batches below. That's fine:
+        # the batch loop's "remaining_qty > 0" check is the authority on
+        # availability, and the caller sees the same InsufficientStockError /
+        # 409 either way (D5 — tightening this would cost a second query per
+        # item for no behavioural difference).
         if not inventory or available_inventory < item.quantity:
             raise InsufficientStockError("Insufficient stock")
 
@@ -145,6 +159,7 @@ def _reserve_inventory_for_order(db: Session, order: Order):
                     SKUBatch.sku_id == item.sku_id,
                     SKUBatch.warehouse_id == warehouse_id,
                     SKUBatch.remaining_quantity > SKUBatch.reserved_quantity,
+                    inventory_service.allocatable_batch_criterion(as_of),
                 )
             )
             .order_by(SKUBatch.expiry_date.is_(None), SKUBatch.expiry_date.asc())
@@ -175,6 +190,10 @@ def _dispatch_reserved_inventory(db: Session, order: Order):
     if not _is_outgoing_order(order):
         return
     _reserve_inventory_for_order(db, order)
+    # Resolved once per call (same reasoning as _reserve_inventory_for_order):
+    # a batch reserved earlier may have expired since reservation, and this is
+    # the last check before physical stock leaves the building (D1).
+    as_of = inventory_service.current_business_date()
     warehouse_id = order.from_entity_id
     for item in order.items:
         inventory = db.query(Inventory).filter(
@@ -187,6 +206,16 @@ def _dispatch_reserved_inventory(db: Session, order: Order):
             batch = db.query(SKUBatch).filter(SKUBatch.id == reserved.batch_id).with_for_update().first()
             if not batch or (batch.reserved_quantity or 0) < reserved.quantity or (batch.remaining_quantity or 0) < reserved.quantity:
                 raise InsufficientStockError("Insufficient stock")
+            if batch.expiry_date is not None and batch.expiry_date < as_of:
+                # Distinct message (R1): the batch was fine when reserved but
+                # has since expired. "Insufficient stock" would send the
+                # operator hunting a phantom stock problem when the warehouse
+                # may be full. No automatic re-allocation path (D5) — the
+                # order must be cancelled and re-placed.
+                raise InsufficientStockError(
+                    "Expired stock cannot be dispatched. Cancel and re-place this order to "
+                    "reserve fresh, non-expired stock."
+                )
             batch.reserved_quantity -= reserved.quantity
             batch.remaining_quantity -= reserved.quantity
             inventory.reserved_quantity = max((inventory.reserved_quantity or 0) - reserved.quantity, 0)
