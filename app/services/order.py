@@ -251,7 +251,21 @@ def _restore_dispatched_inventory(db: Session, order: Order):
     warehouse_id = order.from_entity_id
     for item in order.items:
         for batch_link in item.order_item_batches:
-            batch_link.batch.remaining_quantity += batch_link.quantity
+            # Locked, explicit query — same shape _release_reserved_inventory already uses
+            # (:241) — instead of the lazy `batch_link.batch` relationship. Two things fixed
+            # by this one change:
+            # - The lock. Every other read-modify-write on sku_batches in this module takes
+            #   with_for_update() first (reserve, dispatch, release). Reading through the
+            #   relationship and writing back an absolute value derived from that read meant
+            #   a concurrent writer committing between the two was silently overwritten —
+            #   this was the only unserialised one of the four.
+            # - The guard. batch_id is NOT NULL with a foreign key and no ON DELETE, so the
+            #   row cannot actually vanish — but the sibling function guards its read and
+            #   this one did not, which made the two impossible to tell apart by inspection.
+            #   Now both read the same way.
+            batch = db.query(SKUBatch).filter(SKUBatch.id == batch_link.batch_id).with_for_update().first()
+            if batch:
+                batch.remaining_quantity += batch_link.quantity
             inventory = db.query(Inventory).filter(
                 Inventory.sku_id == item.sku_id,
                 Inventory.warehouse_id == warehouse_id
