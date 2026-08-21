@@ -350,3 +350,184 @@ def test_money_fields_are_decimal_not_float(db, monkeypatch):
     for field in ("grand_total", "payments_total", "credit_note_total", "outstanding"):
         assert isinstance(item[field], Decimal), f"{field} is {type(item[field])}, not Decimal"
     assert item["outstanding"] == Decimal("85.00")
+
+
+# --- get_outstanding_summary ------------------------------------------------------------
+
+
+def test_summary_aging_buckets_hit_exact_boundaries_and_sum_to_total(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    scenarios = [
+        (7, 10),
+        (8, 20),
+        (15, 30),
+        (16, 40),
+        (30, 50),
+        (31, 60),
+    ]
+    for days_old, amount in scenarios:
+        _order(
+            db,
+            retailer_id=seed.retailer_a,
+            sku_id=seed.sku_id,
+            unit_price=amount,
+            quantity=1,
+            payment_status=PaymentStatus.CREDIT,
+            created_at=_FROZEN_NOW - timedelta(days=days_old),
+        )
+
+    summary = get_outstanding_summary(db)
+
+    assert summary["aging"] == {
+        "0_7": Decimal("10.00"),
+        "7_15": Decimal("50.00"),
+        "15_30": Decimal("90.00"),
+        "30_plus": Decimal("60.00"),
+    }
+    assert sum(summary["aging"].values(), Decimal("0.00")) == summary["total_outstanding"]
+    assert summary["total_outstanding"] == Decimal("210.00")
+
+
+def test_summary_by_salesman_uses_pending_sort_and_unassigned_bucket(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, salesman_id=seed.salesman_a, unit_price=100, paid=10, created_at=_FROZEN_NOW)
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, salesman_id=seed.salesman_a, unit_price=60, created_at=_FROZEN_NOW)
+    _order(db, retailer_id=seed.retailer_b, sku_id=seed.sku_id, salesman_id=seed.salesman_b, unit_price=200, created_at=_FROZEN_NOW)
+    _order(db, retailer_id=seed.retailer_b, sku_id=seed.sku_id, salesman_id=None, unit_price=25, created_at=_FROZEN_NOW)
+
+    rows = get_outstanding_summary(db)["by_salesman"]
+
+    assert [row["salesman_name"] for row in rows] == ["Salesman B", "Salesman A", "Unassigned"]
+    assert rows[0] == {
+        "salesman_id": seed.salesman_b,
+        "salesman_name": "Salesman B",
+        "total_credit": Decimal("200.00"),
+        "recovered": Decimal("0.00"),
+        "pending": Decimal("200.00"),
+        "bills": 1,
+    }
+    assert rows[1] == {
+        "salesman_id": seed.salesman_a,
+        "salesman_name": "Salesman A",
+        "total_credit": Decimal("160.00"),
+        "recovered": Decimal("10.00"),
+        "pending": Decimal("150.00"),
+        "bills": 2,
+    }
+    assert rows[2]["salesman_id"] == 0
+    assert rows[2]["pending"] == Decimal("25.00")
+
+
+def test_summary_by_retailer_carries_amounts_and_resolves_names(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, unit_price=100, paid=40, created_at=_FROZEN_NOW)
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, unit_price=25, created_at=_FROZEN_NOW)
+    _order(db, retailer_id=seed.retailer_b, sku_id=seed.sku_id, unit_price=80, paid=10, created_at=_FROZEN_NOW)
+
+    rows = get_outstanding_summary(db)["by_retailer"]
+    by_id = {row["retailer_id"]: row for row in rows}
+
+    assert by_id[seed.retailer_a] == {
+        "retailer_id": seed.retailer_a,
+        "retailer_name": "Retailer A",
+        "total_credit": Decimal("125.00"),
+        "recovered": Decimal("40.00"),
+        "pending": Decimal("85.00"),
+        "bills": 2,
+    }
+    assert by_id[seed.retailer_b] == {
+        "retailer_id": seed.retailer_b,
+        "retailer_name": "Retailer B",
+        "total_credit": Decimal("80.00"),
+        "recovered": Decimal("10.00"),
+        "pending": Decimal("70.00"),
+        "bills": 1,
+    }
+
+
+def test_summary_missing_retailer_row_is_labelled_unknown(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    missing_retailer_id = 999999
+    assert db.query(Retailer).filter(Retailer.id == missing_retailer_id).first() is None
+    _order(db, retailer_id=missing_retailer_id, sku_id=seed.sku_id, unit_price=100, created_at=_FROZEN_NOW)
+
+    rows = get_outstanding_summary(db)["by_retailer"]
+
+    assert rows == [{
+        "retailer_id": missing_retailer_id,
+        "retailer_name": "Unknown",
+        "total_credit": Decimal("100.00"),
+        "recovered": Decimal("0.00"),
+        "pending": Decimal("100.00"),
+        "bills": 1,
+    }]
+
+
+def test_summary_total_credit_notes_counts_only_applicable_notes(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    order = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, unit_price=100, created_at=_FROZEN_NOW)
+    _credit_note(db, order=order, sku_id=seed.sku_id, unit_price=20, applies_to_outstanding=True)
+    _credit_note(db, order=order, sku_id=seed.sku_id, unit_price=15, applies_to_outstanding=False)
+
+    summary = get_outstanding_summary(db)
+
+    assert summary["total_credit_notes"] == Decimal("20.00")
+    assert summary["total_outstanding"] == Decimal("80.00")
+
+
+def test_summary_recovery_rate_is_recovered_over_recovered_plus_outstanding(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, unit_price=100, paid=25, created_at=_FROZEN_NOW)
+
+    summary = get_outstanding_summary(db)
+
+    assert summary["total_recovered"] == Decimal("25.00")
+    assert summary["total_outstanding"] == Decimal("75.00")
+    assert summary["recovery_rate"] == 25.0
+
+
+def test_summary_warehouse_and_date_filters_narrow_the_report(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    in_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=100, created_at=datetime(2026, 6, 10, 12, 0, 0))
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=50, created_at=datetime(2026, 6, 9, 23, 59, 59))
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=60, created_at=datetime(2026, 6, 16, 0, 0, 0))
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=2, unit_price=70, created_at=datetime(2026, 6, 10, 12, 0, 0))
+
+    summary = get_outstanding_summary(db, warehouse_id=1, from_date="2026-06-10", to_date="2026-06-15")
+
+    assert summary["total_outstanding"] == Decimal("100.00")
+    assert summary["by_retailer"][0]["bills"] == 1
+    assert summary["by_retailer"][0]["retailer_id"] == seed.retailer_a
+    assert in_range.id is not None
+
+
+def test_summary_zero_qualifying_orders_returns_zeroes_not_division_error(db, monkeypatch):
+    _freeze(monkeypatch)
+    seed = _seed(db)
+    _order(
+        db,
+        retailer_id=seed.retailer_a,
+        sku_id=seed.sku_id,
+        status=OrderStatus.PENDING,
+        payment_status=PaymentStatus.CREDIT,
+        created_at=_FROZEN_NOW,
+    )
+
+    summary = get_outstanding_summary(db)
+
+    assert summary == {
+        "total_outstanding": Decimal("0.00"),
+        "total_recovered": Decimal("0.00"),
+        "total_credit_notes": Decimal("0.00"),
+        "recovery_rate": 0,
+        "aging": {"0_7": 0, "7_15": 0, "15_30": 0, "30_plus": 0},
+        "by_salesman": [],
+        "by_retailer": [],
+    }
