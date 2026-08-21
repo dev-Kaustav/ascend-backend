@@ -7,6 +7,19 @@ from app.models.enums import OrderStatus, PaymentStatus
 from app.services.finance import calculate_order_outstanding, calculate_order_totals, calculate_credit_note_totals
 
 
+def _naive_utc(value: datetime) -> datetime:
+    """`Order.created_at` is `DateTime(timezone=True)`: PostgreSQL returns it timezone-aware,
+    SQLite returns it naive, and both represent the same UTC instant (rows are always written
+    through `server_default=func.now()` or an explicit UTC value). `datetime.utcnow()` is
+    always naive, so subtracting an aware `created_at` from it raises
+    `TypeError: can't subtract offset-naive and offset-aware datetimes` the moment this runs
+    against real PostgreSQL (#todo RPT-06 — fixed here per Phase 5 coordinator ruling R5,
+    05-CONTEXT.md). Stripping tzinfo, rather than converting, leaves SQLite's naive values
+    untouched and makes PostgreSQL's aware ones comparable, with no change to what "now" means.
+    """
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+
 def _parse_date(value: str | None, is_end: bool) -> datetime | None:
     if not value:
         return None
@@ -88,7 +101,7 @@ def get_outstanding_orders(
             "payment_modes": payment_modes,
             "credit_note_total": round(credit_total, 2),
             "outstanding": outstanding,
-            "days_old": (datetime.utcnow() - order.created_at).days if order.created_at else 0,
+            "days_old": (datetime.utcnow() - _naive_utc(order.created_at)).days if order.created_at else 0,
         })
     return items, total
 
@@ -125,7 +138,7 @@ def get_outstanding_summary(
         total_recovered += payments_total
         total_credit_notes += credit_total
 
-        days = (now - order.created_at).days if order.created_at else 0
+        days = (now - _naive_utc(order.created_at)).days if order.created_at else 0
         if days <= 7:
             aging["0_7"] += outstanding
         elif days <= 15:
