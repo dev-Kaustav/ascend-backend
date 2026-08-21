@@ -5,7 +5,12 @@ import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from app.services.excel_import import _is_date_sheet, _parse_date_from_sheet_or_row
+from app.models import Account, Beat, Invoice, Order, OrderItem, OrderTrail, Retailer
+from app.services.excel_import import (
+    _is_date_sheet,
+    _parse_date_from_sheet_or_row,
+    ingest_daily_sales_workbook,
+)
 
 
 def _workbook(sheets: dict[str, list[list]]):
@@ -61,3 +66,50 @@ def test_date_parser_falls_back_to_hardcoded_historical_year():
     """Undated historical rows are intentionally assigned to the hardcoded year 2026."""
     assert _parse_date_from_sheet_or_row("3 Feb", None) == datetime(2026, 2, 3)
 
+
+def test_daily_sales_import_is_blocked_before_creating_financial_records(db):
+    """RPT-10: importing summary amounts cannot produce accurate immutable invoices."""
+    workbook = _workbook(
+        {
+            "3 Feb": [
+                [
+                    "Date",
+                    "User",
+                    "Outlet_Name",
+                    "Outlet_Id",
+                    "Bill_No",
+                    "Amount",
+                    "Cash",
+                    "Online",
+                    "Cheque",
+                    "Credit",
+                    "Rider",
+                    "Status",
+                    "Define",
+                    "Remark",
+                ],
+                [
+                    None,
+                    "BEAT-1",
+                    "Safety Block Outlet",
+                    "OUTLET-1",
+                    "BILL-1",
+                    1250,
+                    250,
+                    0,
+                    0,
+                    1000,
+                    "Driver One",
+                    "Delivered",
+                    None,
+                    "must not be imported",
+                ],
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="RPT-10"):
+        ingest_daily_sales_workbook(db, workbook, warehouse_id=1)
+
+    for model in (Retailer, Beat, Order, OrderItem, Invoice, Account, OrderTrail):
+        assert db.query(model).count() == 0

@@ -545,7 +545,15 @@ def _reconcile_payment_status(order: Order, cash: float, online: float, cheque: 
         order.payment_status = PaymentStatus.PARTIAL
 
 
+class DailySalesImportBlockedError(ValueError):
+    """Raised while the legacy importer cannot create accurate invoice line items."""
+
+
 def ingest_daily_sales_workbook(db: Session, wb, warehouse_id: int, current_user=None) -> dict:
+    raise DailySalesImportBlockedError(
+        "RPT-10: daily-sales import is blocked because summary Amount values cannot "
+        "safely produce invoice line items, taxes, or immutable invoice totals"
+    )
 
     employee_cache: dict[str, Employee | None] = {}
     retailer_cache: dict[str, Retailer] = {}
