@@ -11,6 +11,7 @@ from app.models import (
     Warehouse,
     Employee,
     Retailer,
+    Beat,
     SKU,
     SKUBatch,
     Inventory,
@@ -676,6 +677,23 @@ def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | 
 
 def list_retailers(db: Session):
     return db.query(Retailer).order_by(Retailer.name.asc()).all()
+
+def set_retailer_beat(db: Session, retailer_id: int, beat_id: int | None):
+    # RPT-01 / D2: one validated write path for beat membership. The existence check on
+    # beat_id is not redundant with the FK — the SQLite test harness does not enable
+    # PRAGMA foreign_keys, so without this a dangling assignment would pass every test
+    # in this repo and fail only in production.
+    retailer = db.query(Retailer).filter(Retailer.id == retailer_id).first()
+    if not retailer:
+        raise ValueError("Retailer not found")
+    if beat_id is not None:
+        beat = db.query(Beat).filter(Beat.id == beat_id).first()
+        if not beat:
+            raise ValueError("Beat not found")
+    retailer.beat_id = beat_id
+    db.commit()
+    db.refresh(retailer)
+    return retailer
 
 def list_brands(db: Session):
     return db.query(Brand).order_by(Brand.name.asc()).all()

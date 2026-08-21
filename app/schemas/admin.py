@@ -165,6 +165,12 @@ class RetailerResponse(BaseModel):
     assigned_salesman_id: Optional[int]
     latitude: Optional[float]
     longitude: Optional[float]
+    beat_id: Optional[int] = None
+
+class RetailerBeatUpdate(BaseModel):
+    # RPT-01 / D2: an absent beat_id and an explicit null mean the same thing here —
+    # remove the retailer from its beat. This endpoint does one thing.
+    beat_id: Optional[int] = None
 
 class SKUCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")

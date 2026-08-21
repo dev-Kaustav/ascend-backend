@@ -13,6 +13,7 @@ from app.services.admin import (
     get_orders_page,
     export_orders_excel,
     list_retailers,
+    set_retailer_beat,
     list_brands,
     list_salesmen,
     list_warehouse_managers,
@@ -47,6 +48,7 @@ from app.schemas.admin import (
     EmployeeResponse,
     RetailerCreate,
     RetailerResponse,
+    RetailerBeatUpdate,
     SKUCreate,
     SKUResponse,
     InventoryReceiptCreate,
@@ -241,6 +243,20 @@ def get_order_status_summary_endpoint(
 @router.get("/retailers", response_model=list[RetailerResponse])
 def list_retailers_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
     return list_retailers(db)
+
+@router.patch("/retailers/{retailer_id}/beat", response_model=RetailerResponse)
+def set_retailer_beat_endpoint(
+    retailer_id: int,
+    payload: RetailerBeatUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return set_retailer_beat(db, retailer_id, payload.beat_id)
+    except ValueError as e:
+        message = str(e)
+        status_code = 404 if message == "Retailer not found" else 400
+        raise HTTPException(status_code=status_code, detail=message)
 
 @router.get("/salesmen", response_model=list[EmployeeResponse])
 def list_salesmen_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
