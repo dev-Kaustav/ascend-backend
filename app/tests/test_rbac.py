@@ -134,7 +134,7 @@ def test_token_role_mismatch_returns_401(client, db):
     assert response.json()["detail"] == "Token role mismatch"
 
 
-def test_list_groups_counts_only_active_non_deleted_members(client, db):
+def test_list_groups_counts_all_non_deleted_members(client, db):
     group = Group(name="Sales Group", role=EmployeeRole.SALESMAN)
     db.add(group)
     db.flush()
@@ -172,7 +172,7 @@ def test_list_groups_counts_only_active_non_deleted_members(client, db):
             "id": group.id,
             "name": "Sales Group",
             "role": "SALESMAN",
-            "user_count": 1,
+            "user_count": 2,
         }
     ]
 

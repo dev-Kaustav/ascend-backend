@@ -897,7 +897,6 @@ def list_groups(db: Session):
         db.query(User.group_id, func.count(User.id))
         .filter(
             User.group_id.isnot(None),
-            User.is_active.is_(True),
             User.deleted_at.is_(None),
         )
         .group_by(User.group_id)
