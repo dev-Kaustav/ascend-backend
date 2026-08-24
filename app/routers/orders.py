@@ -21,15 +21,18 @@ def list_orders(
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
 ):
-    items, total = get_orders_page(
-        db,
-        current_user,
-        limit=limit,
-        offset=offset,
-        status=status,
-        from_date=from_date,
-        to_date=to_date,
-    )
+    try:
+        items, total = get_orders_page(
+            db,
+            current_user,
+            limit=limit,
+            offset=offset,
+            status=status,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    except OrderScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     return {"items": items, "total": total}
 
 

@@ -204,6 +204,43 @@ def test_update_status_out_of_scope_returns_403(client, db):
     assert "order" in response.json()["detail"].lower()
 
 
+def test_get_order_routes_map_out_of_scope_access_to_403(client, db):
+    data = _scope_fixture(db)
+    salesman_without_employee = _user(db, EmployeeRole.SALESMAN)
+
+    list_response = client.get("/orders", headers=_headers(salesman_without_employee))
+
+    assert list_response.status_code == 403
+    assert "salesman" in list_response.json()["detail"].lower()
+
+    for route in (
+        f"/orders/{data['other_order'].id}",
+        f"/orders/{data['other_order'].id}/invoice-view",
+        f"/orders/{data['other_order'].id}/invoice.pdf",
+    ):
+        response = client.get(route, headers=_headers(data["salesman"]))
+
+        assert response.status_code == 403
+        assert "order" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "route",
+    (
+        "/orders/999999",
+        "/orders/999999/invoice-view",
+        "/orders/999999/invoice.pdf",
+    ),
+)
+def test_singular_get_order_routes_map_missing_orders_to_404(client, db, route):
+    admin = _user(db, EmployeeRole.ADMIN)
+
+    response = client.get(route, headers=_headers(admin))
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Order not found"
+
+
 def test_update_status_invalid_transition_returns_400(client, db):
     data = _scope_fixture(db)
 
