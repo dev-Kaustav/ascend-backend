@@ -1,14 +1,10 @@
 import re
 
 from pydantic import BaseModel, ConfigDict, field_validator
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime, date
 
 from app.models.enums import INDIAN_STATES
-
-class PermissionEntry(BaseModel):
-    code: str
-    is_allowed: bool
 
 class GroupCreate(BaseModel):
     name: str
@@ -19,12 +15,7 @@ class GroupResponse(BaseModel):
     id: int
     name: str
     role: str
-    permissions: List[PermissionEntry] = []
     user_count: int = 0
-
-class GroupPermissionUpdate(BaseModel):
-    code: str
-    is_allowed: bool
 
 class BrandCreate(BaseModel):
     name: str
@@ -301,14 +292,9 @@ class UserAdminResponse(BaseModel):
     employee_id: Optional[int] = None
     is_active: bool
     created_at: datetime
-    permissions: List[PermissionEntry] = []
 
 class UserRoleUpdate(BaseModel):
     role: str
-
-class UserPermissionUpdate(BaseModel):
-    code: str
-    is_allowed: bool
 
 class UserGroupUpdate(BaseModel):
     group_id: Optional[int]

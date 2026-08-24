@@ -4,11 +4,8 @@ from app.db.session import get_db
 from app.services.auth import authenticate_user, create_tokens
 from app.schemas.auth import LoginRequest, TokenResponse, RefreshRequest, PasswordChangeRequest
 from app.core.deps import get_current_active_user
-from app.services.admin import get_user_permission_entries
-from app.services.access_rules import list_access_rules
 from app.core.security import verify_password, get_password_hash
 from app.models import User
-from app.schemas.access_rules import AccessRuleResponse
 
 router = APIRouter()
 
@@ -35,16 +32,13 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def get_me(
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    permissions = get_user_permission_entries(db, current_user)
     return {
         "id": current_user.id,
         "email": current_user.email,
         "role": current_user.role.value,
         "is_active": current_user.is_active,
-        "permissions": permissions,
     }
 
 @router.patch("/me/password")
@@ -58,10 +52,3 @@ def change_password(
     current_user.password_hash = get_password_hash(payload.new_password)
     db.commit()
     return {"status": "ok"}
-
-@router.get("/access-rules", response_model=list[AccessRuleResponse])
-def get_access_rules(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    return list_access_rules(db)

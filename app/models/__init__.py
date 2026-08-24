@@ -17,12 +17,7 @@ from .account import Account
 from .credit_note import CreditNote
 from .order_trail import OrderTrail
 from .credit_note_item import CreditNoteItem
-from .permission import Permission
-from .role_permission import RolePermission
-from .user_permission import UserPermission
 from .group import Group
-from .group_permission import GroupPermission
-from .access_rule import AccessRule
 from .bill_label import BillLabel
 from .company_profile import CompanyProfile
 from .outlet_delivery import OutletDelivery

@@ -15,7 +15,7 @@ from app.services.admin import get_inventory
 from app.services.order import create_outgoing_order, InsufficientStockError
 from app.services import inventory as inventory_service
 from app.schemas.order import OrderCreate, OrderItemCreate
-from app.models import SKU, SKUBatch, Inventory, User, Brand, Retailer, Warehouse, Permission
+from app.models import SKU, SKUBatch, Inventory, User, Brand, Retailer, Warehouse
 from app.models.enums import EmployeeRole
 
 
@@ -195,10 +195,6 @@ def test_inventory_endpoint_query_count_does_not_grow_with_rows(db, as_of):
 
 
 def test_inventory_endpoint_serializes_expired_quantity_over_http(db, client, as_of):
-    permission = Permission(code="inventory.view", description="View Inventory")
-    db.add(permission)
-    db.commit()
-
     from app.core.security import create_access_token, get_password_hash
 
     admin = User(
@@ -220,3 +216,75 @@ def test_inventory_endpoint_serializes_expired_quantity_over_http(db, client, as
     body = response.json()
     row = _row_for(body["items"], sku.id, warehouse.id)
     assert row["expired_quantity"] == 4
+
+
+def test_inventory_endpoints_allow_warehouse_manager_without_permission_rows(db, client, as_of):
+    from app.core.security import create_access_token, get_password_hash
+
+    sku, warehouse, retailer, user, (batch,) = _seed(
+        db, [(as_of - timedelta(days=1), 4, 0)], sku_suffix="-manager-http"
+    )
+    manager = User(
+        email="warehouse-manager-http@ascend.com",
+        password_hash=get_password_hash("password"),
+        role=EmployeeRole.WAREHOUSE_MANAGER,
+    )
+    db.add(manager)
+    db.commit()
+    headers = {
+        "Authorization": f"Bearer {create_access_token({'user_id': manager.id, 'role': 'WAREHOUSE_MANAGER'})}"
+    }
+
+    get_response = client.get("/admin/inventory", headers=headers)
+    assert get_response.status_code == 200
+
+    post_response = client.post(
+        "/admin/inventory",
+        headers=headers,
+        json={
+            "brand_id": sku.brand_id,
+            "warehouse_id": warehouse.id,
+            "items": [
+                {
+                    "sku_id": sku.id,
+                    "quantity": 1,
+                    "mfg_date": "2026-06-01",
+                    "expiry_date": "2026-12-01",
+                }
+            ],
+        },
+    )
+    assert post_response.status_code == 200
+
+
+def test_inventory_endpoints_forbid_authenticated_non_manager(db, client, as_of):
+    from app.core.security import create_access_token, get_password_hash
+
+    sku, warehouse, retailer, user, (batch,) = _seed(
+        db, [(as_of - timedelta(days=1), 4, 0)], sku_suffix="-forbidden-http"
+    )
+    accountant = User(
+        email="accountant-http@ascend.com",
+        password_hash=get_password_hash("password"),
+        role=EmployeeRole.ACCOUNTANT,
+    )
+    db.add(accountant)
+    db.commit()
+    headers = {
+        "Authorization": f"Bearer {create_access_token({'user_id': accountant.id, 'role': 'ACCOUNTANT'})}"
+    }
+    receipt = {
+        "brand_id": sku.brand_id,
+        "warehouse_id": warehouse.id,
+        "items": [
+            {
+                "sku_id": sku.id,
+                "quantity": 1,
+                "mfg_date": "2026-06-01",
+                "expiry_date": "2026-12-01",
+            }
+        ],
+    }
+
+    assert client.get("/admin/inventory", headers=headers).status_code == 403
+    assert client.post("/admin/inventory", headers=headers, json=receipt).status_code == 403

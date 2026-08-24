@@ -22,11 +22,7 @@ from app.models import (
     CreditNote,
     Invoice,
     User,
-    Permission,
-    RolePermission,
-    UserPermission,
     Group,
-    GroupPermission,
     CompanyProfile,
 )
 from app.schemas.admin import (
@@ -36,7 +32,6 @@ from app.schemas.admin import (
     SKUCreate,
     InventoryReceiptCreate,
     GroupCreate,
-    GroupPermissionUpdate,
     UserGroupUpdate,
     CompanyProfileUpdate,
 )
@@ -759,122 +754,8 @@ def get_order_status_summary(db: Session, from_date: str | None = None, to_date:
         summary[key] = count
     return summary
 
-def _role_value(role) -> str:
-    return role.value if hasattr(role, "value") else role
-
-def _all_permissions(db: Session):
-    perms = db.query(Permission).order_by(Permission.code.asc()).all()
-    perm_ids = [perm.id for perm in perms]
-    return perms, perm_ids
-
-def _role_permissions_map(db: Session):
-    role_map: dict[str, set[int]] = {}
-    for role, permission_id in db.query(RolePermission.role, RolePermission.permission_id).all():
-        role_map.setdefault(role, set()).add(permission_id)
-    return role_map
-
-def _group_permissions_map(db: Session, group_ids: list[int] | None = None):
-    query = db.query(GroupPermission.group_id, GroupPermission.permission_id, GroupPermission.is_allowed)
-    if group_ids:
-        query = query.filter(GroupPermission.group_id.in_(group_ids))
-    mapping: dict[int, dict[int, bool]] = {}
-    for group_id, permission_id, is_allowed in query.all():
-        mapping.setdefault(group_id, {})[permission_id] = is_allowed
-    return mapping
-
-def _user_permissions_map(db: Session, user_ids: list[int] | None = None):
-    query = db.query(UserPermission.user_id, UserPermission.permission_id, UserPermission.is_allowed)
-    if user_ids:
-        query = query.filter(UserPermission.user_id.in_(user_ids))
-    mapping: dict[int, dict[int, bool]] = {}
-    for user_id, permission_id, is_allowed in query.all():
-        mapping.setdefault(user_id, {})[permission_id] = is_allowed
-    return mapping
-
-def _base_permission_ids_for_role(all_perm_ids: list[int], role_value: str, role_permissions: dict[str, set[int]]):
-    if role_value == "ADMIN":
-        return set(all_perm_ids)
-    return set(role_permissions.get(role_value, set()))
-
-def _build_permission_entries(all_permissions, base_ids: set[int], *overrides: dict[int, bool]):
-    state = {perm_id: True for perm_id in base_ids}
-    for override in overrides:
-        if override:
-            state.update(override)
-    return [{"code": perm.code, "is_allowed": state.get(perm.id, False)} for perm in all_permissions]
-
-def get_user_permission_entries(db: Session, user: User):
-    all_permissions, perm_ids = _all_permissions(db)
-    role_permissions = _role_permissions_map(db)
-    role_value = _role_value(user.role)
-    base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
-    overrides = []
-    if user.group_id:
-        overrides.append(_group_permissions_map(db, [user.group_id]).get(user.group_id, {}))
-    overrides.append(_user_permissions_map(db, [user.id]).get(user.id, {}))
-    return _build_permission_entries(all_permissions, base_ids, *overrides)
-
-def user_has_permission(db: Session, user: User, code: str) -> bool:
-    permissions = get_user_permission_entries(db, user)
-    for entry in permissions:
-        if entry["code"] == code:
-            return bool(entry["is_allowed"])
-    return False
-
-def _enrich_users_with_permissions(db: Session, users: list[User]):
-    if not users:
-        return users
-    all_permissions, perm_ids = _all_permissions(db)
-    role_permissions = _role_permissions_map(db)
-    group_ids = [u.group_id for u in users if u.group_id]
-    group_map = {}
-    if group_ids:
-        group_map = {g.id: g for g in db.query(Group).filter(Group.id.in_(group_ids)).all()}
-    group_permission_map = _group_permissions_map(db, group_ids)
-    user_permission_map = _user_permissions_map(db, [u.id for u in users])
-    employee_ids = [u.employee_id for u in users if u.employee_id]
-    employee_phone_map = {}
-    if employee_ids:
-        employee_phone_map = {
-            emp.id: emp.phone_number
-            for emp in db.query(Employee.id, Employee.phone_number).filter(Employee.id.in_(employee_ids)).all()
-        }
-    for user in users:
-        role_value = _role_value(user.role)
-        base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
-        overrides = []
-        if user.group_id:
-            overrides.append(group_permission_map.get(user.group_id, {}))
-        overrides.append(user_permission_map.get(user.id, {}))
-        user.permissions = _build_permission_entries(all_permissions, base_ids, *overrides)
-        group = group_map.get(user.group_id)
-        user.group_name = group.name if group else None
-        user.phone_number = employee_phone_map.get(user.employee_id)
-    return users
-
-def _enrich_groups_with_permissions(db: Session, groups: list[Group]):
-    if not groups:
-        return groups
-    all_permissions, perm_ids = _all_permissions(db)
-    role_permissions = _role_permissions_map(db)
-    group_permission_map = _group_permissions_map(db, [g.id for g in groups])
-    user_counts = dict(
-        db.query(User.group_id, func.count(User.id))
-        .filter(User.deleted_at.is_(None))
-        .group_by(User.group_id)
-        .all()
-    )
-    for group in groups:
-        role_value = _role_value(group.role)
-        base_ids = _base_permission_ids_for_role(perm_ids, role_value, role_permissions)
-        overrides = [group_permission_map.get(group.id, {})]
-        group.permissions = _build_permission_entries(all_permissions, base_ids, *overrides)
-        group.user_count = int(user_counts.get(group.id, 0))
-    return groups
-
 def list_users(db: Session):
-    users = db.query(User).filter(User.deleted_at.is_(None)).order_by(User.created_at.desc()).all()
-    return _enrich_users_with_permissions(db, users)
+    return db.query(User).filter(User.deleted_at.is_(None)).order_by(User.created_at.desc()).all()
 
 def _count_active_admins(db: Session):
     return (
@@ -967,7 +848,7 @@ def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
+    return user
 
 def set_user_active(db: Session, user_id: int, is_active: bool, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
@@ -984,7 +865,7 @@ def set_user_active(db: Session, user_id: int, is_active: bool, acting_user: Use
     user.is_active = is_active
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
+    return user
 
 def set_user_role(db: Session, user_id: int, role: str, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1007,52 +888,10 @@ def set_user_role(db: Session, user_id: int, role: str, acting_user: User):
     user.role = new_role
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
-
-def ensure_permission(db: Session, code: str, description: str | None = None):
-    perm = db.query(Permission).filter(Permission.code == code).first()
-    if perm:
-        return perm
-    perm = Permission(code=code, description=description or code)
-    db.add(perm)
-    db.commit()
-    db.refresh(perm)
-    return perm
-
-def set_user_permission(db: Session, user_id: int, code: str, is_allowed: bool):
-    perm = ensure_permission(db, code)
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise ValueError("User not found")
-    if user.deleted_at:
-        raise ValueError("User is deleted")
-    def upsert_user_permission(permission_id: int, allowed: bool):
-        entry = (
-            db.query(UserPermission)
-            .filter(UserPermission.user_id == user_id, UserPermission.permission_id == permission_id)
-            .first()
-        )
-        if entry:
-            entry.is_allowed = allowed
-        else:
-            db.add(UserPermission(user_id=user_id, permission_id=permission_id, is_allowed=allowed))
-
-    updates = {perm.id: is_allowed}
-    if code == "inventory.manage" and is_allowed:
-        view_perm = ensure_permission(db, "inventory.view", "View inventory")
-        updates[view_perm.id] = True
-    if code == "inventory.view" and not is_allowed:
-        manage_perm = ensure_permission(db, "inventory.manage", "Manage inventory")
-        updates[manage_perm.id] = False
-
-    for permission_id, allowed in updates.items():
-        upsert_user_permission(permission_id, allowed)
-    db.commit()
-    return {"code": perm.code, "is_allowed": is_allowed}
+    return user
 
 def list_groups(db: Session):
-    groups = db.query(Group).order_by(Group.name.asc()).all()
-    return _enrich_groups_with_permissions(db, groups)
+    return db.query(Group).order_by(Group.name.asc()).all()
 
 def create_group(db: Session, payload: GroupCreate):
     name = payload.name.strip()
@@ -1067,65 +906,9 @@ def create_group(db: Session, payload: GroupCreate):
         raise ValueError("Invalid role")
     group = Group(name=name, role=role_value)
     db.add(group)
-    db.flush()
-
-    all_permissions, perm_ids = _all_permissions(db)
-    role_permissions = _role_permissions_map(db)
-    base_ids = _base_permission_ids_for_role(perm_ids, _role_value(role_value), role_permissions)
-    for perm_id in base_ids:
-        db.add(GroupPermission(group_id=group.id, permission_id=perm_id, is_allowed=True))
-
     db.commit()
     db.refresh(group)
-    return _enrich_groups_with_permissions(db, [group])[0]
-
-def set_group_permission(db: Session, group_id: int, code: str, is_allowed: bool):
-    perm = ensure_permission(db, code)
-    group = db.query(Group).filter(Group.id == group_id).first()
-    if not group:
-        raise ValueError("Group not found")
-    def upsert_group_permission(permission_id: int, allowed: bool):
-        entry = (
-            db.query(GroupPermission)
-            .filter(GroupPermission.group_id == group_id, GroupPermission.permission_id == permission_id)
-            .first()
-        )
-        if entry:
-            entry.is_allowed = allowed
-        else:
-            db.add(GroupPermission(group_id=group_id, permission_id=permission_id, is_allowed=allowed))
-
-    def upsert_user_permission(user_id: int, permission_id: int, allowed: bool):
-        entry = (
-            db.query(UserPermission)
-            .filter(UserPermission.user_id == user_id, UserPermission.permission_id == permission_id)
-            .first()
-        )
-        if entry:
-            entry.is_allowed = allowed
-        else:
-            db.add(UserPermission(user_id=user_id, permission_id=permission_id, is_allowed=allowed))
-
-    updates = {perm.id: is_allowed}
-    if code == "inventory.manage" and is_allowed:
-        view_perm = ensure_permission(db, "inventory.view", "View inventory")
-        updates[view_perm.id] = True
-    if code == "inventory.view" and not is_allowed:
-        manage_perm = ensure_permission(db, "inventory.manage", "Manage inventory")
-        updates[manage_perm.id] = False
-
-    for permission_id, allowed in updates.items():
-        upsert_group_permission(permission_id, allowed)
-    db.flush()
-
-    # Propagate to all users in this group by aligning their explicit permission to the group value.
-    user_ids = [row[0] for row in db.query(User.id).filter(User.group_id == group_id).all()]
-    for user_id in user_ids:
-        for permission_id, allowed in updates.items():
-            upsert_user_permission(user_id, permission_id, allowed)
-
-    db.commit()
-    return {"code": perm.code, "is_allowed": is_allowed}
+    return group
 
 def set_user_group(db: Session, user_id: int, group_id: int | None, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1137,7 +920,7 @@ def set_user_group(db: Session, user_id: int, group_id: int | None, acting_user:
         user.group_id = None
         db.commit()
         db.refresh(user)
-        return _enrich_users_with_permissions(db, [user])[0]
+        return user
 
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -1154,10 +937,7 @@ def set_user_group(db: Session, user_id: int, group_id: int | None, acting_user:
     user.role = new_role
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
-
-def list_permissions(db: Session):
-    return db.query(Permission).order_by(Permission.code.asc()).all()
+    return user
 
 def set_user_password(db: Session, user_id: int, password: str, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1170,7 +950,7 @@ def set_user_password(db: Session, user_id: int, password: str, acting_user: Use
     user.password_hash = get_password_hash(password)
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
+    return user
 
 def soft_delete_user(db: Session, user_id: int, acting_user: User):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1188,4 +968,4 @@ def soft_delete_user(db: Session, user_id: int, acting_user: User):
     user.deleted_at = datetime.utcnow()
     db.commit()
     db.refresh(user)
-    return _enrich_users_with_permissions(db, [user])[0]
+    return user

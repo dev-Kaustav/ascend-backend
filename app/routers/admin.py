@@ -26,19 +26,14 @@ from app.services.admin import (
     set_user_active,
     set_user_role,
     set_user_password,
-    set_user_permission,
-    list_permissions,
     list_groups,
     create_group,
     create_user,
     soft_delete_user,
-    set_group_permission,
     set_user_group,
-    user_has_permission,
     get_company_profile,
     update_company_profile,
 )
-from app.services.access_rules import list_access_rules, upsert_access_rule, delete_access_rule
 from app.services.invoice_export import export_invoices_xlsx, export_invoices_csv
 from app.schemas.admin import (
     BrandCreate,
@@ -56,17 +51,14 @@ from app.schemas.admin import (
     UserCreate,
     UserAdminResponse,
     UserRoleUpdate,
-    UserPermissionUpdate,
     UserPasswordUpdate,
     GroupCreate,
     GroupResponse,
-    GroupPermissionUpdate,
     UserGroupUpdate,
     CompanyProfileUpdate,
     CompanyProfileResponse,
 )
 from app.schemas.order import OrderListPage
-from app.schemas.access_rules import AccessRuleResponse, AccessRuleUpsert
 from app.core.deps import require_admin, require_roles, require_warehouse_manager
 from app.models.beat import Beat
 
@@ -116,8 +108,6 @@ def add_inventory_receipt_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_warehouse_manager),
 ):
-    if not user_has_permission(db, current_user, "inventory.manage"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
     return add_inventory_receipt(db, payload)
 
 @router.get("/inventory", response_model=InventoryPage)
@@ -128,8 +118,6 @@ def get_inventory_endpoint(
     offset: int = Query(0, ge=0),
     warehouse_id: int | None = Query(None, ge=1),
 ):
-    if not user_has_permission(db, current_user, "inventory.view"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
     items, total = get_inventory(db, limit=limit, offset=offset, warehouse_id=warehouse_id)
     return {"items": items, "total": total}
 
@@ -311,45 +299,10 @@ def list_lookups_endpoint(db: Session = Depends(get_db), current_user = Depends(
 def list_groups_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
     return list_groups(db)
 
-@router.get("/access-rules", response_model=list[AccessRuleResponse])
-def list_access_rules_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
-    return list_access_rules(db)
-
-@router.patch("/access-rules", response_model=AccessRuleResponse)
-def upsert_access_rule_endpoint(
-    payload: AccessRuleUpsert,
-    db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
-):
-    return upsert_access_rule(db, payload.path, payload.roles or [], payload.permissions or [])
-
-@router.delete("/access-rules/{rule_id}", response_model=dict)
-def delete_access_rule_endpoint(
-    rule_id: int,
-    db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
-):
-    try:
-        return delete_access_rule(db, rule_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
 @router.post("/groups", response_model=GroupResponse)
 def create_group_endpoint(payload: GroupCreate, db: Session = Depends(get_db), current_user = Depends(require_admin)):
     try:
         return create_group(db, payload)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.patch("/groups/{group_id}/permissions", response_model=dict)
-def set_group_permission_endpoint(
-    group_id: int,
-    payload: GroupPermissionUpdate,
-    db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
-):
-    try:
-        return set_group_permission(db, group_id, payload.code, payload.is_allowed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -433,19 +386,3 @@ def set_user_group_endpoint(
         message = str(e)
         status_code = 404 if "not found" in message.lower() else 400
         raise HTTPException(status_code=status_code, detail=message)
-
-@router.patch("/users/{user_id}/permissions", response_model=dict)
-def set_user_permission_endpoint(
-    user_id: int,
-    payload: UserPermissionUpdate,
-    db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
-):
-    try:
-        return set_user_permission(db, user_id, payload.code, payload.is_allowed)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.get("/permissions")
-def list_permissions_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
-    return list_permissions(db)

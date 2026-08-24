@@ -14,5 +14,4 @@ class Group(Base):
     role = Column(Enum(EmployeeRole, name="employee_role"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    group_permissions = relationship("GroupPermission", cascade="all, delete-orphan")
     users = relationship("User", back_populates="group")

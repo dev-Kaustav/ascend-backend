@@ -20,4 +20,3 @@ class User(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     group = relationship("Group", back_populates="users")
-    user_permissions = relationship("UserPermission", cascade="all, delete-orphan")
