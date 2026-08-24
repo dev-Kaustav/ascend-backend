@@ -5,7 +5,7 @@ from jose import jwt
 
 from app.core.security import SECRET_KEY
 from app.core.security import create_access_token, get_password_hash
-from app.models import User, Order, Employee, Warehouse
+from app.models import Group, User, Order, Employee, Warehouse
 from app.models.enums import EmployeeRole, OrderStatus
 
 
@@ -132,6 +132,49 @@ def test_token_role_mismatch_returns_401(client, db):
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Token role mismatch"
+
+
+def test_list_groups_counts_only_active_non_deleted_members(client, db):
+    group = Group(name="Sales Group", role=EmployeeRole.SALESMAN)
+    db.add(group)
+    db.flush()
+    db.add_all(
+        [
+            User(
+                email="active-group-member@example.com",
+                password_hash=get_password_hash("password"),
+                role=EmployeeRole.SALESMAN,
+                group_id=group.id,
+            ),
+            User(
+                email="inactive-group-member@example.com",
+                password_hash=get_password_hash("password"),
+                role=EmployeeRole.SALESMAN,
+                group_id=group.id,
+                is_active=False,
+            ),
+            User(
+                email="deleted-group-member@example.com",
+                password_hash=get_password_hash("password"),
+                role=EmployeeRole.SALESMAN,
+                group_id=group.id,
+                deleted_at=datetime.utcnow(),
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.get("/admin/groups", headers=_auth_header_for(db, EmployeeRole.ADMIN))
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": group.id,
+            "name": "Sales Group",
+            "role": "SALESMAN",
+            "user_count": 1,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

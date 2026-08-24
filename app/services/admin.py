@@ -892,7 +892,20 @@ def set_user_role(db: Session, user_id: int, role: str, acting_user: User):
     return user
 
 def list_groups(db: Session):
-    return db.query(Group).order_by(Group.name.asc()).all()
+    groups = db.query(Group).order_by(Group.name.asc()).all()
+    user_counts = dict(
+        db.query(User.group_id, func.count(User.id))
+        .filter(
+            User.group_id.isnot(None),
+            User.is_active.is_(True),
+            User.deleted_at.is_(None),
+        )
+        .group_by(User.group_id)
+        .all()
+    )
+    for group in groups:
+        group.user_count = user_counts.get(group.id, 0)
+    return groups
 
 def create_group(db: Session, payload: GroupCreate):
     name = payload.name.strip()
