@@ -136,6 +136,7 @@ def get_orders_endpoint(
 ):
     items, total = get_orders_page(
         db,
+        current_user,
         limit=limit,
         offset=offset,
         status=status,

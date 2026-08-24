@@ -200,11 +200,11 @@ def test_dispatch_refuses_a_batch_that_expired_after_reservation(db, as_of, monk
 
     result.delivery_driver_id = 1
     db.commit()
-    update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"))
+    update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"), user)
 
     # Move the seam forward past the batch's expiry, then dispatch.
     monkeypatch.setattr(
         inventory_service, "current_business_date", lambda: as_of + timedelta(days=10)
     )
     with pytest.raises(InsufficientStockError):
-        update_order_status(db, result.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+        update_order_status(db, result.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)

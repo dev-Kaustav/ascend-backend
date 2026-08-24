@@ -168,25 +168,25 @@ def _place_order(db, ids, quantity=4):
     )
 
 
-def _ready_to_ship(db, order, driver):
+def _ready_to_ship(db, order, driver, current_user):
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user)
     db.refresh(order)
 
 
-def _dispatch(db, order):
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+def _dispatch(db, order, current_user):
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
     db.refresh(order)
 
 
-def _deliver(db, order):
-    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+def _deliver(db, order, current_user):
+    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), current_user)
     db.refresh(order)
 
 
-def _cancel(db, order):
-    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"))
+def _cancel(db, order, current_user):
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user)
     db.refresh(order)
 
 
@@ -216,7 +216,7 @@ def test_ready_to_ship_moves_no_inventory(db):
     order = _place_order(db, ids, quantity=4)
 
     before = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
-    _ready_to_ship(db, order, ids["driver"])
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
     after = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
     assert before == after
 
@@ -224,8 +224,8 @@ def test_ready_to_ship_moves_no_inventory(db):
 def test_dispatch_converts_reservation_into_a_shipment(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _ready_to_ship(db, order, ids["driver"])
-    _dispatch(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _dispatch(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -249,11 +249,11 @@ def test_dispatch_converts_reservation_into_a_shipment(db):
 def test_delivery_moves_no_inventory(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _ready_to_ship(db, order, ids["driver"])
-    _dispatch(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _dispatch(db, order, ids["admin"])
 
     before = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
-    _deliver(db, order)
+    _deliver(db, order, ids["admin"])
     after = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
     assert before == after
 
@@ -261,7 +261,7 @@ def test_delivery_moves_no_inventory(db):
 def test_release_from_pending_returns_the_reservation_and_drops_the_allocation_rows(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _cancel(db, order)
+    _cancel(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -277,8 +277,8 @@ def test_release_from_pending_returns_the_reservation_and_drops_the_allocation_r
 def test_release_from_ready_to_ship_behaves_identically(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _ready_to_ship(db, order, ids["driver"])
-    _cancel(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _cancel(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -294,9 +294,9 @@ def test_release_from_ready_to_ship_behaves_identically(db):
 def test_restore_from_out_for_delivery_returns_the_goods_and_keeps_the_allocation_rows(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _ready_to_ship(db, order, ids["driver"])
-    _dispatch(db, order)
-    _cancel(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _dispatch(db, order, ids["admin"])
+    _cancel(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -321,10 +321,10 @@ def test_restore_from_out_for_delivery_returns_the_goods_and_keeps_the_allocatio
 def test_restore_from_delivered_behaves_identically(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
-    _ready_to_ship(db, order, ids["driver"])
-    _dispatch(db, order)
-    _deliver(db, order)
-    _cancel(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _dispatch(db, order, ids["admin"])
+    _deliver(db, order, ids["admin"])
+    _cancel(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -354,13 +354,13 @@ def test_release_and_restore_treat_allocation_rows_differently_on_purpose(db):
     destroying that trail."""
     released_ids = _seed(db, batch_quantity=10)
     released_order = _place_order(db, released_ids, quantity=4)
-    _cancel(db, released_order)
+    _cancel(db, released_order, released_ids["admin"])
 
     restored_ids = _seed(db, batch_quantity=10)
     restored_order = _place_order(db, restored_ids, quantity=4)
-    _ready_to_ship(db, restored_order, restored_ids["driver"])
-    _dispatch(db, restored_order)
-    _cancel(db, restored_order)
+    _ready_to_ship(db, restored_order, restored_ids["driver"], restored_ids["admin"])
+    _dispatch(db, restored_order, restored_ids["admin"])
+    _cancel(db, restored_order, restored_ids["admin"])
 
     assert len(_order_item_batches(db, released_order.id)) == 0, (
         "release: a dropped reservation describes nothing — the rows must be gone"
@@ -406,8 +406,8 @@ def test_dispatch_reentry_does_not_duplicate_allocation_rows(db):
     order = _place_order(db, ids, quantity=4)
     before_count = len(_order_item_batches(db, order.id))
 
-    _ready_to_ship(db, order, ids["driver"])
-    _dispatch(db, order)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
+    _dispatch(db, order, ids["admin"])
     after_count = len(_order_item_batches(db, order.id))
 
     assert before_count == 1

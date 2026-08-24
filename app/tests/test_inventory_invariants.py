@@ -149,16 +149,16 @@ def _seed_order(db, quantity=6, batch_quantity=15):
     return order, sku, warehouse, brand, driver, admin
 
 
-def _dispatch(db, order, driver):
+def _dispatch(db, order, driver, current_user):
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
     db.refresh(order)
 
 
-def _deliver(db, order):
-    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+def _deliver(db, order, current_user):
+    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), current_user)
     db.refresh(order)
 
 
@@ -174,20 +174,20 @@ def test_invariants_hold_after_order_creation(db):
 
 def test_invariants_hold_after_dispatch(db):
     order, sku, warehouse, brand, driver, admin = _seed_order(db)
-    _dispatch(db, order, driver)
+    _dispatch(db, order, driver, admin)
     assert_inventory_invariants(db)
 
 
 def test_invariants_hold_after_release_from_pending(db):
     order, sku, warehouse, brand, driver, admin = _seed_order(db)
-    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"))
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), admin)
     assert_inventory_invariants(db)
 
 
 def test_invariants_hold_after_restore_from_out_for_delivery(db):
     order, sku, warehouse, brand, driver, admin = _seed_order(db)
-    _dispatch(db, order, driver)
-    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"))
+    _dispatch(db, order, driver, admin)
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), admin)
     assert_inventory_invariants(db)
 
 
@@ -253,10 +253,10 @@ def test_invariants_hold_across_two_orders_on_one_sku(db):
     )
     assert_inventory_invariants(db)
 
-    _dispatch(db, order_a, driver)
+    _dispatch(db, order_a, driver, admin)
     assert_inventory_invariants(db)
 
-    update_order_status(db, order_b.id, StatusUpdate(status="CANCELLED"))
+    update_order_status(db, order_b.id, StatusUpdate(status="CANCELLED"), admin)
     assert_inventory_invariants(db)
 
 
@@ -280,8 +280,8 @@ def test_credit_note_restock_breaks_the_aggregate_invariant(db):
     it — at which point they delete this test on purpose.
     """
     order, sku, warehouse, brand, driver, admin = _seed_order(db, quantity=6, batch_quantity=15)
-    _dispatch(db, order, driver)
-    _deliver(db, order)
+    _dispatch(db, order, driver, admin)
+    _deliver(db, order, admin)
     assert_inventory_invariants(db)
 
     restock_quantity = 4

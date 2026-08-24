@@ -594,9 +594,9 @@ def main():
         # "CONFIRMED" is not a member of OrderStatus, nor a legal transition from PENDING
         # (app/services/order.py:373-380). Fixing the order-lifecycle state machine is
         # Phase 3's scope (D-07); only the invoice references above were brought into line.
-        update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"))
+        update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"), admin_user)
         if "DELIVERED" in order_data["delivery_status"].upper():
-            update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+            update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), admin_user)
 
         order.created_at = datetime.combine(order_date, datetime.min.time())
         db.commit()
@@ -663,9 +663,9 @@ def main():
             continue
 
         # Same pre-existing CONFIRMED breakage as the block above (D-07: out of scope here).
-        update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"))
+        update_order_status(db, order.id, StatusUpdate(status="CONFIRMED"), admin_user)
         if offset % 6 != 0:
-            update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+            update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), admin_user)
         issue_invoice_for_order(
             db, order, invoice_number=invoice_number,
             invoice_date=datetime.combine(order_date, datetime.min.time()),

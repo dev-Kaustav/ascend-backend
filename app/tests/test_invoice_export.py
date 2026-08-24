@@ -95,14 +95,14 @@ def _dispatched_order(
     )
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), user)
     if invoice_date is not None:
         # Issue with an explicit invoice_date up front. issue_invoice_for_order is
         # idempotent (app/services/invoice.py), so the OUT_FOR_DELIVERY transition below
         # still runs inventory dispatch but does not re-issue or overwrite this date —
         # an issued Invoice is immutable, so the date could not be set after the fact.
         issue_invoice_for_order(db, order, invoice_date=invoice_date)
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
     db.refresh(order)
     return order, order.invoice
 

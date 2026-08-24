@@ -50,6 +50,14 @@ class StatusTransitionForbiddenError(Exception):
     pass
 
 
+class OrderScopeError(Exception):
+    pass
+
+
+class OrderNotFoundError(ValueError):
+    pass
+
+
 # Single authority for both legality (is this (from, to) pair reachable at all?) and role
 # (which non-admin roles may perform it?). A (from, to) pair absent from this table is an
 # illegal transition; the mapped frozenset is the set of non-admin roles permitted to make
@@ -91,6 +99,12 @@ def _check_role_for_transition(current_user, next_status: OrderStatus, order: "O
         # Fall through to the table check below — a retailer is only listed on
         # (PENDING, CANCELLED) and (READY_TO_SHIP, CANCELLED); any other transition is
         # denied by the membership check.
+    if role == "DRIVER":
+        if (
+            not getattr(current_user, "employee_id", None)
+            or current_user.employee_id != order.delivery_driver_id
+        ):
+            raise StatusTransitionForbiddenError("Order is not assigned to this driver")
     if role not in allowed:
         raise StatusTransitionForbiddenError(
             f"Role {role} cannot move order from {order.status.value} to {next_status.value}"
@@ -98,6 +112,59 @@ def _check_role_for_transition(current_user, next_status: OrderStatus, order: "O
 
 def _is_outgoing_order(order: Order) -> bool:
     return order.from_entity_type == "WAREHOUSE" and order.to_entity_type == "RETAILER"
+
+
+def _assert_order_in_scope(current_user, order: Order, db: Session):
+    role = get_role_value(current_user)
+    if role in {"ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"}:
+        return
+    if role == "SALESMAN":
+        employee_id = getattr(current_user, "employee_id", None)
+        if not employee_id:
+            raise OrderScopeError("Salesman missing employee record")
+        retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
+        if not retailer or retailer.assigned_salesman_id != employee_id:
+            raise OrderScopeError("Order retailer is not assigned to this salesman")
+        return
+    if role == "DRIVER":
+        employee_id = getattr(current_user, "employee_id", None)
+        if not employee_id or order.delivery_driver_id != employee_id:
+            raise OrderScopeError("Order is not assigned to this driver")
+        return
+    if role == "RETAILER":
+        retailer_id = getattr(current_user, "retailer_id", None)
+        if not retailer_id or order.to_entity_id != retailer_id:
+            raise OrderScopeError("Order does not belong to your account")
+        return
+    raise OrderScopeError("Order access is not permitted for this role")
+
+
+def scoped_orders_query(db: Session, current_user):
+    query = db.query(Order).filter(
+        Order.from_entity_type == "WAREHOUSE",
+        Order.to_entity_type == "RETAILER",
+    )
+    role = get_role_value(current_user)
+    if role in {"ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"}:
+        return query
+    if role == "SALESMAN":
+        employee_id = getattr(current_user, "employee_id", None)
+        if not employee_id:
+            raise OrderScopeError("Salesman missing employee record")
+        return query.join(Retailer, Retailer.id == Order.to_entity_id).filter(
+            Retailer.assigned_salesman_id == employee_id
+        )
+    if role == "DRIVER":
+        employee_id = getattr(current_user, "employee_id", None)
+        if not employee_id:
+            raise OrderScopeError("Driver missing employee record")
+        return query.filter(Order.delivery_driver_id == employee_id)
+    if role == "RETAILER":
+        retailer_id = getattr(current_user, "retailer_id", None)
+        if not retailer_id:
+            raise OrderScopeError("Retailer missing retailer record")
+        return query.filter(Order.to_entity_id == retailer_id)
+    raise OrderScopeError("Order access is not permitted for this role")
 
 def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> bool:
     warehouse_state = getattr(warehouse, "state", None)
@@ -419,13 +486,14 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
         _record_payment(db, db_order, payment_mode, payment_amount)
     return db_order
 
-def update_order_status(db: Session, order_id: int, status: StatusUpdate, current_user=None):
+def update_order_status(db: Session, order_id: int, status: StatusUpdate, current_user):
     # ORD-03: lock this row before reading order.status. Two concurrent callers must not
     # both pass the legality check below against the same stale status — the loser has to
     # block here, then see the winner's committed status once unblocked.
     order = db.query(Order).filter(Order.id == order_id).populate_existing().with_for_update().first()
     if not order:
-        raise ValueError("Order not found")
+        raise OrderNotFoundError("Order not found")
+    _assert_order_in_scope(current_user, order, db)
     next_status = status.status
     if isinstance(next_status, str):
         try:
@@ -436,8 +504,7 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
     if next_status not in allowed_next_statuses(order.status):
         raise ValueError("Invalid status transition")
 
-    if current_user is not None:
-        _check_role_for_transition(current_user, next_status, order)
+    _check_role_for_transition(current_user, next_status, order)
 
     if status.delivery_driver_id:
         driver = db.query(Employee).filter(Employee.id == status.delivery_driver_id).first()
@@ -503,7 +570,7 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
         order_id=order.id,
         order_status=next_status,
         description=trail_description,
-        changed_by_id=getattr(current_user, "id", None) if current_user else None,
+        changed_by_id=getattr(current_user, "id", None),
     ))
 
     db.commit()
@@ -655,15 +722,25 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "created_at": order.created_at,
     }
 
-def get_order_detail(db: Session, order_id: int):
+def get_order_detail(db: Session, order_id: int, current_user):
     order = _order_detail_query(db).filter(Order.id == order_id).first()
     if not order:
-        raise ValueError("Order not found")
+        raise OrderNotFoundError("Order not found")
+    _assert_order_in_scope(current_user, order, db)
     return _serialize_order(db, order)
 
-def get_order_invoice_view(db: Session, order_id: int):
+def get_order_invoice_view(db: Session, order_id: int, current_user):
     order = _order_detail_query(db).filter(Order.id == order_id).first()
     if not order:
-        raise ValueError("Order not found")
+        raise OrderNotFoundError("Order not found")
+    _assert_order_in_scope(current_user, order, db)
     totals = calculate_order_totals(order)
     return {"order": _serialize_order(db, order), **totals}
+
+
+def get_order_for_invoice_pdf(db: Session, order_id: int, current_user):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise OrderNotFoundError("Order not found")
+    _assert_order_in_scope(current_user, order, db)
+    return order

@@ -40,6 +40,7 @@ from app.services.transactions import transactional_session
 from app.core.security import get_password_hash
 from app.services.finance import calculate_order_outstanding
 from app.services import inventory as inventory_service
+from app.services.order import scoped_orders_query
 
 def create_brand(db: Session, brand: BrandCreate):
     db_brand = Brand(**brand.dict())
@@ -305,6 +306,7 @@ def _totals_subqueries(db: Session):
 
 def get_orders_page(
     db: Session,
+    current_user,
     limit: int = 50,
     offset: int = 0,
     status: str | None = None,
@@ -313,9 +315,8 @@ def get_orders_page(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
-    base_query=None,
 ):
-    query = base_query if base_query is not None else _outgoing_orders_query(db)
+    query = scoped_orders_query(db, current_user)
     query = _apply_order_filters(
         query,
         status=status,

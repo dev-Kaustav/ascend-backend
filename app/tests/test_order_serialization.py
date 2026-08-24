@@ -26,6 +26,7 @@ not a fix.
 import itertools
 from contextlib import contextmanager
 from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import event
 
@@ -54,6 +55,7 @@ _seed_counter = itertools.count()
 # Pinned by test_order_detail_query_count_is_bounded — see that test for what "maximal
 # shape" means. Any change, up or down, must be a deliberate edit to this constant.
 MAXIMAL_SHAPE_QUERY_COUNT = 14
+_ADMIN_ACTOR = SimpleNamespace(role=EmployeeRole.ADMIN.value)
 
 
 @contextmanager
@@ -220,8 +222,8 @@ def test_order_detail_query_count_does_not_grow_with_items(db):
     order_1 = _seed_order(db, n_items=1, n_trails=1, n_authors=1)
     order_20 = _seed_order(db, n_items=20, n_trails=1, n_authors=1)
 
-    _, count_1 = _measure(db, get_order_detail, order_1.id)
-    _, count_20 = _measure(db, get_order_detail, order_20.id)
+    _, count_1 = _measure(db, get_order_detail, order_1.id, _ADMIN_ACTOR)
+    _, count_20 = _measure(db, get_order_detail, order_20.id, _ADMIN_ACTOR)
 
     assert count_1 == count_20, (
         f"query count grew with item count: 1 item = {count_1}, 20 items = {count_20} "
@@ -233,8 +235,8 @@ def test_order_detail_query_count_does_not_grow_with_trail_authors(db):
     order_1 = _seed_order(db, n_items=1, n_trails=1, n_authors=1)
     order_12 = _seed_order(db, n_items=1, n_trails=12, n_authors=6)
 
-    _, count_1 = _measure(db, get_order_detail, order_1.id)
-    _, count_12 = _measure(db, get_order_detail, order_12.id)
+    _, count_1 = _measure(db, get_order_detail, order_1.id, _ADMIN_ACTOR)
+    _, count_12 = _measure(db, get_order_detail, order_12.id, _ADMIN_ACTOR)
 
     assert count_1 == count_12, (
         f"query count grew with distinct trail authors: 1 author = {count_1}, "
@@ -255,8 +257,8 @@ def test_order_detail_query_count_does_not_grow_with_payments_or_credit_notes(db
     order_light = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=1, n_credit_notes=1)
     order_heavy = _seed_order(db, n_items=1, n_trails=1, n_authors=1, n_payments=5, n_credit_notes=5)
 
-    _, count_light = _measure(db, get_order_detail, order_light.id)
-    _, count_heavy = _measure(db, get_order_detail, order_heavy.id)
+    _, count_light = _measure(db, get_order_detail, order_light.id, _ADMIN_ACTOR)
+    _, count_heavy = _measure(db, get_order_detail, order_heavy.id, _ADMIN_ACTOR)
 
     assert count_light == count_heavy, (
         f"query count grew with payments/credit note count: light (1 each) = {count_light}, "
@@ -279,7 +281,7 @@ def test_order_detail_query_count_is_bounded(db):
         n_credit_notes=2,
     )
 
-    _, count = _measure(db, get_order_detail, order.id)
+    _, count = _measure(db, get_order_detail, order.id, _ADMIN_ACTOR)
 
     assert count <= 15, f"maximal shape cost {count} queries, expected <= 15"
     assert count == MAXIMAL_SHAPE_QUERY_COUNT, (
@@ -299,8 +301,9 @@ def test_orders_page_query_count_is_constant_for_fifty_orders(db):
         _seed_order(db, n_items=2, n_trails=1, n_authors=1)
 
     db.expire_all()
+    actor = _ADMIN_ACTOR
     with _count_queries(db) as counter:
-        get_orders_page(db, limit=5)
+        get_orders_page(db, actor, limit=5)
     count_5 = counter["n"]
 
     for _ in range(45):
@@ -308,7 +311,7 @@ def test_orders_page_query_count_is_constant_for_fifty_orders(db):
 
     db.expire_all()
     with _count_queries(db) as counter:
-        get_orders_page(db, limit=50)
+        get_orders_page(db, actor, limit=50)
     count_50 = counter["n"]
 
     assert count_5 == count_50, f"get_orders_page grew with order count: 5 = {count_5}, 50 = {count_50}"
@@ -366,7 +369,7 @@ def test_serialized_shape_is_stable(db):
     db.commit()
     db.expire_all()
 
-    result = get_order_detail(db, order.id)
+    result = get_order_detail(db, order.id, _ADMIN_ACTOR)
 
     expected_keys = {
         "id", "from_entity_type", "from_entity_id", "to_entity_type", "to_entity_id",

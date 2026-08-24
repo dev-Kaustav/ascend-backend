@@ -63,8 +63,8 @@ def test_fefo_allocation(db):
 
     result.delivery_driver_id = 1
     db.commit()
-    update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"))
-    update_order_status(db, result.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+    update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"), user)
+    update_order_status(db, result.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
     assert updated_inventory.total_quantity == 9
     assert updated_inventory.reserved_quantity == 0
     assert refreshed_early.remaining_quantity == 0

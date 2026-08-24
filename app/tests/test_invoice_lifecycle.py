@@ -52,11 +52,11 @@ def _seed_dispatchable_order(db, quantity=5):
     return order, driver, user
 
 
-def _dispatch(db, order, driver):
+def _dispatch(db, order, driver, current_user):
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"))
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
     db.refresh(order)
 
 
@@ -68,8 +68,8 @@ def test_order_creation_issues_no_invoice(db):
 
 
 def test_pending_cancellation_issues_no_invoice_and_burns_no_number(db):
-    order, _driver, _user = _seed_dispatchable_order(db)
-    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"))
+    order, _driver, user = _seed_dispatchable_order(db)
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), user)
     assert db.query(Invoice).count() == 0
 
     # A different order dispatches next. On the SQLite test engine the serial comes
@@ -77,13 +77,13 @@ def test_pending_cancellation_issues_no_invoice_and_burns_no_number(db):
     # serial this would not be 1. (PostgreSQL sequence behaviour is covered by
     # test_invoice_sequence_pg.py.)
     other_order, other_driver, _other_user = _seed_dispatchable_order(db)
-    _dispatch(db, other_order, other_driver)
+    _dispatch(db, other_order, other_driver, _other_user)
     assert other_order.invoice.invoice_serial == 1
 
 
 def test_dispatch_issues_exactly_one_invoice(db):
-    order, driver, _user = _seed_dispatchable_order(db)
-    _dispatch(db, order, driver)
+    order, driver, user = _seed_dispatchable_order(db)
+    _dispatch(db, order, driver, user)
 
     assert db.query(Invoice).count() == 1
     assert order.invoice is not None
@@ -94,19 +94,19 @@ def test_dispatch_issues_exactly_one_invoice(db):
 
 
 def test_ready_to_ship_alone_issues_no_invoice(db):
-    order, driver, _user = _seed_dispatchable_order(db)
+    order, driver, user = _seed_dispatchable_order(db)
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"))
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), user)
     assert db.query(Invoice).count() == 0
 
 
 def test_delivery_after_dispatch_does_not_issue_a_second_invoice(db):
-    order, driver, _user = _seed_dispatchable_order(db)
-    _dispatch(db, order, driver)
+    order, driver, user = _seed_dispatchable_order(db)
+    _dispatch(db, order, driver, user)
     number_after_dispatch = order.invoice_number
 
-    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"))
+    update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), user)
     db.refresh(order)
 
     assert db.query(Invoice).count() == 1
@@ -114,11 +114,11 @@ def test_delivery_after_dispatch_does_not_issue_a_second_invoice(db):
 
 
 def test_cancellation_after_dispatch_leaves_the_invoice_intact(db):
-    order, driver, _user = _seed_dispatchable_order(db)
-    _dispatch(db, order, driver)
+    order, driver, user = _seed_dispatchable_order(db)
+    _dispatch(db, order, driver, user)
     number_before_cancel = order.invoice_number
 
-    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"))  # must not raise
+    update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), user)  # must not raise
     db.refresh(order)
 
     assert order.invoice is not None
@@ -126,12 +126,12 @@ def test_cancellation_after_dispatch_leaves_the_invoice_intact(db):
 
 
 def test_serialize_order_reports_null_then_the_number(db):
-    order, driver, _user = _seed_dispatchable_order(db)
-    detail_before = get_order_detail(db, order.id)
+    order, driver, user = _seed_dispatchable_order(db)
+    detail_before = get_order_detail(db, order.id, user)
     assert detail_before["invoice_number"] is None
 
-    _dispatch(db, order, driver)
-    detail_after = get_order_detail(db, order.id)
+    _dispatch(db, order, driver, user)
+    detail_after = get_order_detail(db, order.id, user)
     assert detail_after["invoice_number"] == order.invoice_number
 
 
@@ -142,15 +142,15 @@ def test_invoice_number_property_is_read_only(db):
 
 
 def test_admin_has_invoice_filter_splits_pending_from_dispatched(db):
-    pending_order, _pending_driver, _pending_user = _seed_dispatchable_order(db)
+    pending_order, _pending_driver, pending_user = _seed_dispatchable_order(db)
     dispatched_order, dispatched_driver, _dispatched_user = _seed_dispatchable_order(db)
-    _dispatch(db, dispatched_order, dispatched_driver)
+    _dispatch(db, dispatched_order, dispatched_driver, _dispatched_user)
 
-    with_invoice, _total = get_orders_page(db, has_invoice=True)
+    with_invoice, _total = get_orders_page(db, pending_user, has_invoice=True)
     assert [o.id for o in with_invoice] == [dispatched_order.id]
 
-    without_invoice, _total = get_orders_page(db, has_invoice=False)
+    without_invoice, _total = get_orders_page(db, pending_user, has_invoice=False)
     assert [o.id for o in without_invoice] == [pending_order.id]
 
-    searched, _total = get_orders_page(db, search=dispatched_order.invoice_number)
+    searched, _total = get_orders_page(db, pending_user, search=dispatched_order.invoice_number)
     assert [o.id for o in searched] == [dispatched_order.id]
