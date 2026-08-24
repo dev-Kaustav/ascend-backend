@@ -1,3 +1,9 @@
+from datetime import datetime, timedelta
+
+import pytest
+from jose import jwt
+
+from app.core.security import SECRET_KEY
 from app.core.security import create_access_token, get_password_hash
 from app.models import User, Order, Employee, Warehouse
 from app.models.enums import EmployeeRole, OrderStatus
@@ -13,6 +19,137 @@ def _auth_header_for(db, role: EmployeeRole) -> dict:
     db.commit()
     token = create_access_token({"user_id": user.id, "role": role.value})
     return {"Authorization": f"Bearer {token}"}
+
+
+def _expired_auth_header_for(db, role: EmployeeRole) -> dict:
+    user = User(
+        email=f"expired-{role.value.lower()}@example.com",
+        password_hash=get_password_hash("password"),
+        role=role,
+    )
+    db.add(user)
+    db.commit()
+    token = jwt.encode(
+        {
+            "user_id": user.id,
+            "role": role.value,
+            "exp": datetime.utcnow() - timedelta(minutes=1),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _header_for_user(user: User, claimed_role: EmployeeRole | None = None) -> dict:
+    role = claimed_role or user.role
+    token = create_access_token({"user_id": user.id, "role": role.value})
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_missing_bearer_credentials_returns_401(client):
+    response = client.get("/admin/warehouses")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+
+def test_wrong_auth_scheme_returns_401(client):
+    response = client.get(
+        "/admin/warehouses",
+        headers={"Authorization": "Basic not-a-bearer-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+
+
+def test_malformed_bearer_token_returns_401(client):
+    response = client.get(
+        "/admin/warehouses",
+        headers={"Authorization": "Bearer not-a-jwt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid token"
+
+
+def test_expired_token_returns_401(client, db):
+    response = client.get(
+        "/admin/warehouses",
+        headers=_expired_auth_header_for(db, EmployeeRole.ADMIN),
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid token"
+
+
+def test_deleted_user_token_returns_401(client, db):
+    user = User(
+        email="deleted@example.com",
+        password_hash=get_password_hash("password"),
+        role=EmployeeRole.ADMIN,
+        deleted_at=datetime.utcnow(),
+    )
+    db.add(user)
+    db.commit()
+
+    response = client.get("/admin/warehouses", headers=_header_for_user(user))
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "User deleted"
+
+
+def test_inactive_user_token_returns_401(client, db):
+    user = User(
+        email="inactive@example.com",
+        password_hash=get_password_hash("password"),
+        role=EmployeeRole.ADMIN,
+        is_active=False,
+    )
+    db.add(user)
+    db.commit()
+
+    response = client.get("/admin/warehouses", headers=_header_for_user(user))
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Inactive user"
+
+
+def test_token_role_mismatch_returns_401(client, db):
+    user = User(
+        email="role-mismatch@example.com",
+        password_hash=get_password_hash("password"),
+        role=EmployeeRole.ADMIN,
+    )
+    db.add(user)
+    db.commit()
+
+    response = client.get(
+        "/admin/warehouses",
+        headers=_header_for_user(user, claimed_role=EmployeeRole.SALESMAN),
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Token role mismatch"
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_status"),
+    [
+        (EmployeeRole.ADMIN, 200),
+        (EmployeeRole.SALESMAN, 403),
+        (EmployeeRole.ACCOUNTANT, 200),
+        (EmployeeRole.WAREHOUSE_MANAGER, 200),
+        (EmployeeRole.DRIVER, 403),
+        (EmployeeRole.RETAILER, 403),
+        (EmployeeRole.BRAND, 403),
+    ],
+)
+def test_warehouse_visibility_role_matrix(client, db, role, expected_status):
+    response = client.get("/admin/warehouses", headers=_auth_header_for(db, role))
+
+    assert response.status_code == expected_status
 
 
 def test_admin_vs_salesman_access(client, db):
