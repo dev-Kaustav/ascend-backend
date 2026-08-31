@@ -16,7 +16,11 @@ from app.models import (
 )
 from app.models.enums import INDIAN_STATES
 
-MONEY_COLUMNS = [
+# SKU pricing carries a third decimal because rate is derived, not typed: it is
+# amount / (1 + total GST%), which is rarely exact (PTR 8.00 at 5% GST is 7.619).
+# Rounding that to 2 decimals at rest made the stored rate disagree with the
+# pricing sheet. Downstream money — what an order actually charges — stays at 2.
+SKU_MONEY_COLUMNS = [
     (SKU, "mrp"),
     (SKU, "rate"),
     (SKU, "amount"),
@@ -29,6 +33,9 @@ MONEY_COLUMNS = [
     (SKU, "distributor_landing_price"),
     (SKU, "discount_amount"),
     (SKU, "discount_percent"),
+]
+
+MONEY_COLUMNS = [
     (OrderItem, "unit_price"),
     (OrderItem, "discount_amount"),
     (OrderItemTax, "rate"),
@@ -56,6 +63,13 @@ def test_money_columns_are_decimal_12_2():
         t = model.__table__.c[column_name].type
         assert isinstance(t, Numeric) and not isinstance(t, Float), (model.__name__, column_name)
         assert (t.precision, t.scale) == (12, 2), (model.__name__, column_name)
+
+
+def test_sku_money_columns_are_decimal_12_3():
+    for model, column_name in SKU_MONEY_COLUMNS:
+        t = model.__table__.c[column_name].type
+        assert isinstance(t, Numeric) and not isinstance(t, Float), (model.__name__, column_name)
+        assert (t.precision, t.scale) == (12, 3), (model.__name__, column_name)
 
 
 def test_quantity_columns_are_integer():
