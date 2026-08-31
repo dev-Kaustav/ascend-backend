@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -157,3 +158,83 @@ def test_order_taxes_use_warehouse_and_retailer_state(db):
         user,
     )
     assert [tax.tax_type for tax in other_order.items[0].taxes] == ["IGST"]
+
+
+def test_order_accepts_client_supplied_tax_rates(db):
+    """The frontend posts taxes=[{tax_type: "GST", rate: <float>}] for every line whose SKU
+    carries GST (components/orders/AdminOrderCreate.jsx). Those floats reach
+    _fallback_tax_rate, which sums onto a Decimal start value — a TypeError no caller catches,
+    so every such order returned 500. The tests above all omit `taxes`, which is why the suite
+    stayed green while order creation was broken in production."""
+    brand = Brand(name="Client Tax Brand")
+    warehouse = Warehouse(name="Client WH", location="Delhi", state="Delhi")
+    retailer = Retailer(name="Client Retailer", state="Delhi")
+    user = User(email="admin-client-tax@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add_all([brand, warehouse, retailer, user])
+    db.flush()
+    sku = SKU(name="Client Tax SKU", brand_id=brand.id, mrp=60, sgst_percent=2.5, cgst_percent=2.5)
+    db.add(sku)
+    db.flush()
+    db.add_all([
+        SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=10, remaining_quantity=10),
+        Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=10),
+    ])
+    db.commit()
+
+    order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[
+                OrderItemCreate(
+                    sku_id=sku.id,
+                    quantity=5,
+                    unit_price=48.0,
+                    discount_amount=12.0,
+                    taxes=[{"tax_type": "GST", "rate": 5.0}],
+                )
+            ],
+        ),
+        user,
+    )
+    assert sorted(tax.tax_type for tax in order.items[0].taxes) == ["CGST", "SGST"]
+
+
+def test_client_tax_rates_split_when_sku_has_no_gst_percentages(db):
+    """With no SGST/CGST on the SKU, the client-supplied rate is the only source, so it must
+    still parse as a number and split in half rather than raising."""
+    brand = Brand(name="Fallback Brand")
+    warehouse = Warehouse(name="Fallback WH", location="Delhi", state="Delhi")
+    retailer = Retailer(name="Fallback Retailer", state="Delhi")
+    user = User(email="admin-fallback-tax@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add_all([brand, warehouse, retailer, user])
+    db.flush()
+    sku = SKU(name="No GST SKU", brand_id=brand.id, mrp=60)
+    db.add(sku)
+    db.flush()
+    db.add_all([
+        SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=10, remaining_quantity=10),
+        Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=10),
+    ])
+    db.commit()
+
+    order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[
+                OrderItemCreate(
+                    sku_id=sku.id,
+                    quantity=1,
+                    unit_price=48.0,
+                    taxes=[{"tax_type": "GST", "rate": 5.0}],
+                )
+            ],
+        ),
+        user,
+    )
+    rates = {tax.tax_type: tax.rate for tax in order.items[0].taxes}
+    assert sorted(rates) == ["CGST", "SGST"]
+    assert sum(rates.values()) == Decimal("5.00")

@@ -172,7 +172,15 @@ def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> b
     return bool(warehouse_state and retailer_state and warehouse_state != retailer_state)
 
 def _fallback_tax_rate(item) -> Decimal:
-    return sum((tax.rate or Decimal("0") for tax in getattr(item, "taxes", []) or []), Decimal("0"))
+    # tax.rate arrives as a float here: the caller passes the request item, whose taxes are
+    # OrderItemTaxCreate (rate: float), not the persisted OrderItemTax (rate: Numeric). Summing
+    # those onto a Decimal start value raises TypeError, which no caller catches, so every order
+    # carrying a tax line 500s. Normalise through str() so 2.5 stays 2.5 rather than picking up
+    # the binary-float tail Decimal(2.5) would.
+    return sum(
+        (Decimal(str(tax.rate)) for tax in getattr(item, "taxes", []) or [] if tax.rate),
+        Decimal("0"),
+    )
 
 def _tax_rows_for_item(sku: SKU | None, item, inter_state: bool) -> list[dict]:
     sgst = getattr(sku, "sgst_percent", None) or Decimal("0")
