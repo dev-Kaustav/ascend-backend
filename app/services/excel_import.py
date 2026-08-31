@@ -184,6 +184,7 @@ def _validate_skus(db: Session, rows: list[tuple[int, dict]], new_brand_names: s
                 brand_cache[brand_name] = brand.id
         records.append({
             "name": name,
+            "code": _str(row.get("SKU Code")),
             "_brand_name": brand_name,
             "hsn_code": _str(row.get("HSN Code")),
             "mrp": _float(row.get("MRP")),

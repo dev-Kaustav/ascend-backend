@@ -38,6 +38,7 @@ SHEET_HEADERS: dict[str, list[str]] = {
     ],
     "SKUs": [
         "Name",
+        "SKU Code",
         "Brand Name",
         "HSN Code",
         "MRP",

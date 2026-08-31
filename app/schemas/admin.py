@@ -166,6 +166,7 @@ class RetailerBeatUpdate(BaseModel):
 class SKUCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: str
+    code: Optional[str] = None
     brand_id: int
     hsn_code: str
     distributor_landing_price: Optional[float] = None
@@ -189,6 +190,7 @@ class SKUResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
+    code: Optional[str]
     brand_id: int
     hsn_code: Optional[str]
     distributor_landing_price: Optional[float]

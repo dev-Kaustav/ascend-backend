@@ -710,6 +710,7 @@ def list_skus(db: Session):
             load_only(
                 SKU.id,
                 SKU.name,
+                SKU.code,
                 SKU.brand_id,
                 SKU.hsn_code,
                 SKU.distributor_landing_price,

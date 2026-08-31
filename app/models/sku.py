@@ -7,6 +7,11 @@ class SKU(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    # The code printed on stock sheets and count sheets (CHN-HG-25g). Nullable
+    # because SKUs predating this column have none; unique so a code names one
+    # SKU. Postgres permits many NULLs under a unique constraint, so the
+    # un-coded rows coexist.
+    code = Column(String, unique=True, index=True)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=False)
     hsn_code = Column(String)
     distributor_landing_price = Column(Numeric(12, 3))

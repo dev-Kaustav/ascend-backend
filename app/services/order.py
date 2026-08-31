@@ -610,6 +610,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
             "id": item.id,
             "sku_id": item.sku_id,
             "sku_name": sku.name if sku else None,
+            "sku_code": sku.code if sku else None,
             "hsn_code": sku.hsn_code if sku else None,
             "quantity": _round_money(item.quantity),
             "unit_price": _round_money(item.unit_price),
