@@ -75,6 +75,18 @@ class Invoice(Base):
     supplier_address = Column(String, nullable=True)
     supplier_pincode = Column(String, nullable=True)
 
+    # Payment instructions, frozen at issuance rather than read live from CompanyProfile.
+    # pdf_sha256 below pins the rendered bytes, so a later bank change or QR replacement
+    # must not alter what an already-issued invoice renders.
+    supplier_bank_name = Column(String, nullable=True)
+    supplier_bank_account_name = Column(String, nullable=True)
+    supplier_bank_account_number = Column(String, nullable=True)
+    supplier_bank_ifsc = Column(String, nullable=True)
+    supplier_bank_branch = Column(String, nullable=True)
+    payment_qr_image_id = Column(
+        Integer, ForeignKey("payment_qr_images.id", ondelete="RESTRICT"), nullable=True
+    )
+
     # Buyer snapshot (INV-05)
     buyer_name = Column(String, nullable=False)
     buyer_gstin = Column(String, nullable=True)
@@ -101,6 +113,10 @@ class Invoice(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     order = relationship("Order", back_populates="invoice")
+    # Eagerly joined at render time: render_invoice_pdf may be called on a transient
+    # invoice before db.add(), so the image has to be reachable off the object graph
+    # rather than fetched by id.
+    payment_qr_image = relationship("PaymentQRImage")
     # No delete-orphan: an invoice line is never orphaned because an invoice is never
     # deleted, and a delete cascade would give the ORM a route around the immutability guard.
     lines = relationship("InvoiceLine", back_populates="invoice", order_by="InvoiceLine.line_number")

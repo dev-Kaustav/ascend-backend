@@ -43,6 +43,35 @@ def _next_invoice_serial(db: Session) -> int:
     return db.execute(text("SELECT nextval('invoice_number_seq')")).scalar_one()
 
 
+# The supplier-side fields a valid GST tax invoice must carry, declared here — beside
+# the code that stamps them onto the immutable snapshot — so the ops UI warns against the
+# same list issuance actually reads. `state` stays required even though issuance falls
+# back to the dispatching warehouse's state: the fallback is a safety net, not the intent.
+REQUIRED_COMPANY_INVOICE_FIELDS = (
+    "legal_name",
+    "gstin",
+    "state",
+    "address_line1",
+    "pincode",
+)
+
+
+def missing_company_invoice_fields(profile: CompanyProfile | None) -> list[str]:
+    """Which supplier fields are still blank on the company profile.
+
+    Non-empty means every invoice issued from now on is stamped incomplete — and invoices
+    are immutable, so it cannot be corrected after the fact. Issuance is deliberately not
+    blocked on this; the ops UI surfaces it as a warning instead.
+    """
+    if profile is None:
+        return list(REQUIRED_COMPANY_INVOICE_FIELDS)
+    return [
+        field
+        for field in REQUIRED_COMPANY_INVOICE_FIELDS
+        if not (getattr(profile, field, None) or "").strip()
+    ]
+
+
 def _get_or_create_company_profile(db: Session) -> CompanyProfile:
     """Mirror app/services/order.py:_get_company_profile_for_update minus the row lock —
     there is no longer a counter on this row to protect (D-04)."""
@@ -149,12 +178,12 @@ def issue_invoice_for_order(
 
     invoice = Invoice(
         order=order,
-        # Set explicitly rather than relying on the relationship's FK sync, which the
-        # ORM only performs at flush time. render_invoice_pdf is called below on this
-        # still-transient invoice (before db.add/flush, per D-06), and its "Order ID"
-        # line would otherwise read None here and the real id after a later flush —
-        # a real byte-identity break between the issue-time render and any
-        # regeneration, caught by plan 02-04's own test suite.
+        # Set explicitly rather than relying on the relationship's FK sync, which the ORM
+        # only performs at flush time. This originally guarded a byte-identity break: the
+        # PDF printed an "Order ID" line that read None at issue time and the real id on
+        # any later regeneration. That line has since been removed from the invoice (it is
+        # an internal key, not a GST field), so the digest no longer depends on it — but
+        # order_id is NOT NULL, so setting it here rather than at flush is still correct.
         order_id=order.id,
         invoice_date=invoice_date or datetime.utcnow(),
         status=InvoiceStatus.ISSUED.value,
@@ -169,6 +198,15 @@ def issue_invoice_for_order(
         supplier_state=supplier_state,
         supplier_address=supplier_address,
         supplier_pincode=profile.pincode,
+        # Payment instructions frozen here rather than read at render time — see the
+        # column comments on Invoice. The QR is carried as the ORM object, not the id,
+        # because render_invoice_pdf runs against this still-transient invoice below.
+        supplier_bank_name=profile.bank_name,
+        supplier_bank_account_name=profile.bank_account_name,
+        supplier_bank_account_number=profile.bank_account_number,
+        supplier_bank_ifsc=profile.bank_ifsc,
+        supplier_bank_branch=profile.bank_branch,
+        payment_qr_image=profile.payment_qr_image,
         buyer_name=buyer_name,
         buyer_gstin=buyer_gstin,
         buyer_state=buyer_state,

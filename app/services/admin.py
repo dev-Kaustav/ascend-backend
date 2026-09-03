@@ -24,7 +24,9 @@ from app.models import (
     User,
     Group,
     CompanyProfile,
+    PaymentQRImage,
 )
+from app.models.payment_qr_image import digest_image
 from app.schemas.admin import (
     BrandCreate,
     WarehouseCreate,
@@ -104,6 +106,47 @@ def update_company_profile(db: Session, payload: CompanyProfileUpdate):
     db.commit()
     db.refresh(profile)
     return profile
+
+# Only raster formats reportlab can place in a PDF. SVG is rejected: reportlab cannot
+# draw it without extra dependencies, and a QR that silently fails to render is worse
+# than one refused at upload.
+ALLOWED_QR_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif"}
+MAX_QR_IMAGE_BYTES = 2 * 1024 * 1024
+
+
+def set_payment_qr_image(db: Session, image_bytes: bytes, content_type: str, label: str | None = None):
+    """Store a payment QR and point the company profile at it.
+
+    Append-only: an identical re-upload resolves to the existing row (matched on digest)
+    and the previous image is never deleted, because invoices issued against it still
+    render from it.
+    """
+    if not image_bytes:
+        raise ValueError("QR image is empty.")
+    if len(image_bytes) > MAX_QR_IMAGE_BYTES:
+        raise ValueError("QR image must be 2 MB or smaller.")
+    normalized_type = (content_type or "").split(";")[0].strip().lower()
+    if normalized_type not in ALLOWED_QR_CONTENT_TYPES:
+        raise ValueError("QR image must be a PNG, JPEG or GIF.")
+
+    digest = digest_image(image_bytes)
+    image = db.query(PaymentQRImage).filter(PaymentQRImage.sha256 == digest).first()
+    if image is None:
+        image = PaymentQRImage(
+            image_bytes=image_bytes,
+            content_type=normalized_type,
+            sha256=digest,
+            label=label,
+        )
+        db.add(image)
+        db.flush()
+
+    profile = get_company_profile(db)
+    profile.payment_qr_image_id = image.id
+    db.commit()
+    db.refresh(profile)
+    return profile
+
 
 def add_inventory_receipt(db: Session, receipt: InventoryReceiptCreate):
     with transactional_session(db):

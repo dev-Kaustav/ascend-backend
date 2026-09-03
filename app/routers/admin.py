@@ -33,7 +33,9 @@ from app.services.admin import (
     set_user_group,
     get_company_profile,
     update_company_profile,
+    set_payment_qr_image,
 )
+from app.services.invoice import missing_company_invoice_fields
 from app.services.invoice_export import export_invoices_xlsx, export_invoices_csv
 from app.schemas.admin import (
     BrandCreate,
@@ -208,9 +210,16 @@ def get_admin_summary_endpoint(
 ):
     return get_admin_summary(db, from_date=from_date, to_date=to_date)
 
+def _company_profile_view(profile) -> CompanyProfileResponse:
+    """Attach the computed completeness list the stored row does not carry."""
+    view = CompanyProfileResponse.model_validate(profile)
+    view.missing_invoice_fields = missing_company_invoice_fields(profile)
+    return view
+
+
 @router.get("/company-profile", response_model=CompanyProfileResponse)
 def get_company_profile_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
-    return get_company_profile(db)
+    return _company_profile_view(get_company_profile(db))
 
 @router.patch("/company-profile", response_model=CompanyProfileResponse)
 def update_company_profile_endpoint(
@@ -218,7 +227,7 @@ def update_company_profile_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_admin),
 ):
-    return update_company_profile(db, payload)
+    return _company_profile_view(update_company_profile(db, payload))
 
 @router.get("/orders/status-summary")
 def get_order_status_summary_endpoint(

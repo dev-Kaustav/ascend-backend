@@ -19,6 +19,7 @@ from .order_trail import OrderTrail
 from .credit_note_item import CreditNoteItem
 from .group import Group
 from .bill_label import BillLabel
+from .payment_qr_image import PaymentQRImage
 from .company_profile import CompanyProfile
 from .outlet_delivery import OutletDelivery
 from .outlet_assignment import OutletAssignment, OutletAssignmentItem

@@ -5,7 +5,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from PIL import Image as PILImage
 from sqlalchemy.orm import Session
 
 from app.models import CompanyProfile, Invoice
@@ -28,6 +29,7 @@ STYLE_TITLE = ParagraphStyle("title", fontName=FONT_BOLD, fontSize=16, leading=2
 STYLE_NORMAL = ParagraphStyle("normal", fontName=FONT, fontSize=8, leading=10)
 STYLE_NORMAL_BOLD = ParagraphStyle("normalBold", fontName=FONT_BOLD, fontSize=8, leading=10)
 STYLE_SMALL = ParagraphStyle("small", fontName=FONT, fontSize=7, leading=9)
+STYLE_SMALL_RIGHT = ParagraphStyle("smallRight", fontName=FONT, fontSize=7, leading=9, alignment=2)
 STYLE_LABEL = ParagraphStyle("label", fontName=FONT_BOLD, fontSize=8, leading=10)
 STYLE_TOTAL_LABEL = ParagraphStyle("totalLabel", fontName=FONT_BOLD, fontSize=9, leading=12)
 STYLE_TOTAL_VALUE = ParagraphStyle("totalValue", fontName=FONT_BOLD, fontSize=9, leading=12, alignment=2)
@@ -110,14 +112,14 @@ def _build_invoice_info_table(invoice: Invoice):
     except AttributeError:
         invoice_date = str(invoice.invoice_date or "")[:10]
 
+    # One row, two cells. The order id used to sit here but it is an internal primary key
+    # with no meaning to the buyer or to a CA, and it is not a GST invoice field — the
+    # invoice number is the document's identity. The order is still reachable internally
+    # via invoices.order_id.
     data = [
         [
-            _p(f"Invoice Date: {invoice_date}", STYLE_NORMAL),
-            _p(f"Order ID: {invoice.order_id}", STYLE_NORMAL),
-        ],
-        [
             _p(f"INVOICE NUMBER: <b>{invoice.invoice_number or '-'}</b>", STYLE_NORMAL),
-            _p(""),
+            _p(f"Invoice Date: {invoice_date}", STYLE_NORMAL),
         ],
     ]
     tbl = Table(data, colWidths=[content_width * 0.5, content_width * 0.5])
@@ -159,6 +161,26 @@ def _build_address_table(invoice: Invoice):
     return tbl
 
 
+def _discount_cell(line) -> str:
+    """Discount as `amount (percent)`, e.g. `30.00 (10%)`.
+
+    The percentage is derived from the line's own gross (unit_rate x quantity) rather than
+    stored, because no discount-percent column exists — the order form lets a user enter
+    either a percent or an amount and only the resolved amount is persisted.
+    """
+    discount = line.discount_amount or Decimal(0)
+    if not discount:
+        return "0.00"
+    gross = (Decimal(str(line.unit_rate or 0))) * (line.quantity or 0)
+    if gross <= 0:
+        return _money(discount)
+    percent = (Decimal(str(discount)) / gross) * 100
+    # Whole percentages are the common case and reading "10%" beats "10.00%"; keep one
+    # decimal otherwise so 12.5% does not silently round to 13%.
+    text = f"{percent:.0f}" if percent == percent.to_integral_value() else f"{percent:.1f}"
+    return f"{_money(discount)} ({text}%)"
+
+
 def _build_items_table(invoice: Invoice):
     """Built from `invoice.lines` alone — every tax figure is a stored column, never
     recomputed. There used to be an `_extract_taxes` helper here that independently
@@ -168,14 +190,24 @@ def _build_items_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
     inter_state = invoice.is_inter_state
 
+    # Every column except the description is fixed; the description absorbs the remainder
+    # so the widths sum to exactly content_width. The previous fractional widths summed to
+    # ~466pt against a 553pt content width, leaving the items table visibly narrower than
+    # the header, totals and footer boxes it sits between.
+    # Widths are measured against the real content width (510pt at A4 with 15mm margins),
+    # every column except the description fixed, the description absorbing the remainder so
+    # the row sums to exactly content_width. The previous fractional widths summed to ~466pt
+    # and left the items table visibly narrower than the boxes above and below it.
     if inter_state:
         header = ["Sr.", "Item Description", "HSN", "Qty", "Unit Rate", "Disc",
                   "Taxable", "IGST %", "IGST", "Amount"]
-        col_widths = [20, content_width * 0.22, 48, 28, 42, 38, 48, 34, 42, 52]
+        fixed = [18, 40, 20, 40, 52, 46, 30, 44, 48]
     else:
         header = ["Sr.", "Item Description", "HSN", "Qty", "Unit Rate", "Disc",
                   "Taxable", "SGST %", "SGST", "CGST %", "CGST", "Amount"]
-        col_widths = [20, content_width * 0.16, 42, 24, 38, 34, 42, 30, 36, 30, 36, 46]
+        fixed = [18, 40, 20, 40, 52, 46, 28, 40, 28, 40, 48]
+    description_width = content_width - sum(fixed)
+    col_widths = [fixed[0], description_width] + fixed[1:]
 
     data = [header]
 
@@ -187,7 +219,7 @@ def _build_items_table(invoice: Invoice):
             line.hsn_code or "-",
             str(qty),
             _money(line.unit_rate),
-            _money(line.discount_amount) if line.discount_amount else "0.00",
+            _p(_discount_cell(line), STYLE_SMALL_RIGHT),
             _money(line.taxable_value),
         ]
         if inter_state:
@@ -228,12 +260,13 @@ def _build_items_table(invoice: Invoice):
 def _build_totals_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
 
+    # No "Items Discount" row. Sub Total is the sum of line taxable values, and
+    # finance._order_item_taxable_value already subtracts the discount before tax:
+    # taxable = (qty * unit_rate - discount) - tax. Listing the discount again in a column
+    # that reads as a running subtraction implies it is deducted twice. The per-line
+    # discount is shown in the items table's Disc column, and invoice.discount_amount is
+    # still stored and still exported for GSTR-1 — it is only absent from this summary.
     rows = [["Sub Total", _money(invoice.taxable_value)]]
-    # "Items Discount" reads invoice.discount_amount directly — a stored line-level
-    # total, not re-accumulated with a per-unit multiplication. The old renderer did
-    # `total_discount += discount * qty`, which is quantity-times too large because
-    # discount_amount is already a per-line amount (finance.py subtracts it once).
-    rows.append(["Items Discount", _money(invoice.discount_amount)])
     if invoice.is_inter_state:
         rows.append(["IGST", _money(invoice.igst_amount)])
     else:
@@ -253,6 +286,86 @@ def _build_totals_table(invoice: Invoice):
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+    ]))
+    return tbl
+
+
+def _payment_detail_rows(invoice: Invoice):
+    """Bank rows for the payment block, read from the invoice's own frozen columns.
+
+    Never from the live CompanyProfile: these are snapshotted at issuance precisely so a
+    later bank change cannot alter an already-issued document (and break pdf_sha256).
+    """
+    return [
+        (label, value)
+        for label, value in (
+            ("Bank", invoice.supplier_bank_name),
+            ("Account Name", invoice.supplier_bank_account_name),
+            ("Account No.", invoice.supplier_bank_account_number),
+            ("IFSC", invoice.supplier_bank_ifsc),
+            ("Branch", invoice.supplier_bank_branch),
+        )
+        if value
+    ]
+
+
+def _qr_flowable(invoice: Invoice):
+    """The frozen payment QR as a reportlab Image, or None.
+
+    Reads invoice.payment_qr_image, which issue_invoice_for_order assigns as an ORM object
+    so this works while the invoice is still transient. A corrupt or unreadable image is
+    skipped rather than raised: a bad QR must never make an invoice unrenderable, because
+    the document is a legal record and the QR is a convenience.
+    """
+    image = getattr(invoice, "payment_qr_image", None)
+    if image is None or not getattr(image, "image_bytes", None):
+        return None
+    # Validate eagerly with PIL. reportlab's Image is lazy — it does not touch the bytes
+    # until doc.build(), so wrapping the constructor in try/except catches nothing and a
+    # corrupt stored image would raise deep inside the build and make the invoice
+    # unrenderable. PIL is a hard dependency of reportlab, so this adds no requirement.
+    # Validate eagerly with PIL. reportlab's Image is lazy — it does not touch the bytes
+    # until doc.build(), so wrapping the constructor in try/except catches nothing and a
+    # corrupt stored image would raise deep inside the build and make the invoice
+    # unrenderable. PIL is a hard dependency of reportlab, so this adds no requirement.
+    try:
+        PILImage.open(BytesIO(image.image_bytes)).verify()
+    except Exception:
+        return None
+    # Drawn at full width with no added margin. The QR spec wants a ~4-module quiet zone,
+    # and the surrounding table cell's 6pt padding on a white page already provides it —
+    # verified by rasterising the finished invoice at 300 DPI and scanning it. Padding the
+    # image here instead would only shrink the printed code inside the same 26mm box.
+    return Image(BytesIO(image.image_bytes), width=26 * mm, height=26 * mm)
+
+
+def _build_payment_details_table(invoice: Invoice):
+    """Bank details on the left, payment QR on the right. Returns None when the invoice
+    froze neither, so an invoice issued before any payment details existed is unchanged."""
+    rows = _payment_detail_rows(invoice)
+    qr = _qr_flowable(invoice)
+    if not rows and qr is None:
+        return None
+
+    content_width = PAGE_WIDTH - 2 * MARGIN
+    left = [_p("Payment Details", STYLE_LABEL)]
+    for label, value in rows:
+        left.append(_p(f"{label}: {value}", STYLE_SMALL))
+    if not rows:
+        left.append(_p("Scan to pay", STYLE_SMALL))
+
+    right = qr if qr is not None else _p("")
+
+    tbl = Table([[left, right]], colWidths=[content_width * 0.7, content_width * 0.3])
+    tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
+        ("VALIGN", (0, 0), (0, -1), "TOP"),
+        ("VALIGN", (1, 0), (1, -1), "MIDDLE"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
     return tbl
 
@@ -328,8 +441,22 @@ def render_invoice_pdf(invoice: Invoice, company: CompanyProfile | None = None) 
         [["", totals_tbl]],
         colWidths=[content_width * 0.5, content_width * 0.5],
     )
-    wrapper.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    # Zero padding, or the nested totals table (exactly half the content width) overflows
+    # its wrapper cell by reportlab's default 6pt-per-side padding and its right edge sits
+    # 12pt past the items table's. The wrapper exists only to right-align, not to inset.
+    wrapper.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
     elements.append(wrapper)
+
+    payment_tbl = _build_payment_details_table(invoice)
+    if payment_tbl is not None:
+        elements.append(Spacer(1, 3 * mm))
+        elements.append(payment_tbl)
 
     elements.append(Spacer(1, 4 * mm))
     elements.append(_build_footer_table(invoice, company))

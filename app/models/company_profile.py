@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 from .enums import state_check_constraint
@@ -20,3 +21,15 @@ class CompanyProfile(Base):
     email = Column(String)
     invoice_prefix = Column(String, nullable=False, default="ASC")
     invoice_footer = Column(String)
+
+    # Payment instructions. These are the *current* values; each invoice freezes its own
+    # copy at issuance (see app/models/invoice.py), because invoices.pdf_sha256 pins the
+    # rendered bytes and changing a bank account must not rewrite historical documents.
+    bank_name = Column(String)
+    bank_account_name = Column(String)
+    bank_account_number = Column(String)
+    bank_ifsc = Column(String)
+    bank_branch = Column(String)
+    payment_qr_image_id = Column(Integer, ForeignKey("payment_qr_images.id", ondelete="RESTRICT"))
+
+    payment_qr_image = relationship("PaymentQRImage")

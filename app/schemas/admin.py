@@ -246,6 +246,11 @@ class CompanyProfileBase(BaseModel):
     email: Optional[str] = None
     invoice_prefix: str = "ASC"
     invoice_footer: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_branch: Optional[str] = None
 
 class CompanyProfileUpdate(CompanyProfileBase):
     @field_validator("state")
@@ -261,6 +266,12 @@ class CompanyProfileUpdate(CompanyProfileBase):
 class CompanyProfileResponse(CompanyProfileBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    # Supplier fields still blank that a valid GST tax invoice needs. Computed, not
+    # stored; the authority is invoice.missing_company_invoice_fields.
+    missing_invoice_fields: list[str] = []
+    # Read-only: the QR is changed by uploading a file, never by PATCHing this payload,
+    # so it is deliberately absent from CompanyProfileBase.
+    payment_qr_image_id: Optional[int] = None
 
 class UserCreate(BaseModel):
     email: str
