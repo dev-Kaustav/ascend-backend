@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.services.order import create_outgoing_order, update_order_status, get_order_detail, get_order_invoice_view, get_order_for_invoice_pdf, InsufficientStockError, RetailerAccessError, StatusTransitionForbiddenError, OrderNotFoundError, OrderScopeError
+from app.services.order import create_outgoing_order, order_form_lookups, update_order_status, get_order_detail, get_order_invoice_view, get_order_for_invoice_pdf, InsufficientStockError, RetailerAccessError, StatusTransitionForbiddenError, OrderNotFoundError, OrderScopeError
 from app.services.invoice_pdf import regenerate_invoice_pdf
 from app.services.admin import get_orders_page
 from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceView, OrderListPage
@@ -50,6 +50,19 @@ def create_order(
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# Declared before /{order_id}: FastAPI matches routes in declaration order, so a
+# literal path that could also parse as an order id has to come first.
+@router.get("/lookups")
+def order_form_lookups_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("ADMIN", "ACCOUNTANT", "SALESMAN")),
+):
+    try:
+        return order_form_lookups(db, current_user)
+    except OrderScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
 
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(

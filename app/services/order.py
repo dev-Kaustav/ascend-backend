@@ -166,6 +166,42 @@ def scoped_orders_query(db: Session, current_user):
         return query.filter(Order.to_entity_id == retailer_id)
     raise OrderScopeError("Order access is not permitted for this role")
 
+def order_form_lookups(db: Session, current_user):
+    """Lookups for the order-creation form, scoped the same way create_outgoing_order
+    scopes its write. A salesman sees only the retailers assigned to them, so the form
+    cannot offer a retailer the POST would reject with RetailerAccessError.
+
+    Deliberately narrower than /admin/lookups: no salesmen, warehouse managers, drivers
+    or beats. Those are admin-console lookups; an order form needs retailers, SKUs,
+    warehouses and brands, and nothing on this endpoint should widen a salesman's read
+    surface beyond what they already have.
+    """
+    from app.services.admin import list_brands, list_retailers, list_skus, list_warehouses
+
+    role = get_role_value(current_user)
+    if role in {"ADMIN", "ACCOUNTANT"}:
+        retailers = list_retailers(db)
+    elif role == "SALESMAN":
+        employee_id = getattr(current_user, "employee_id", None)
+        if not employee_id:
+            raise OrderScopeError("Salesman missing employee record")
+        retailers = (
+            db.query(Retailer)
+            .filter(Retailer.assigned_salesman_id == employee_id)
+            .order_by(Retailer.name.asc())
+            .all()
+        )
+    else:
+        raise OrderScopeError("Order creation is not permitted for this role")
+
+    return {
+        "retailers": retailers,
+        "skus": list_skus(db),
+        "warehouses": list_warehouses(db),
+        "brands": list_brands(db),
+    }
+
+
 def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> bool:
     warehouse_state = getattr(warehouse, "state", None)
     retailer_state = getattr(retailer, "state", None)
