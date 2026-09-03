@@ -11,7 +11,7 @@ class _ImportAbort(Exception):
 from app.models.enums import EmployeeRole, OrderStatus, PaymentStatus, PaymentMode, IssueCategory
 from app.services.excel_template import SHEET_HEADERS
 from app.services.invoice import issue_invoice_for_order
-from app.services.transactions import transactional_session
+from app.services.transactions import transactional_session, reclaim_sequences
 
 
 def _read_rows(ws) -> list[tuple[int, dict]]:
@@ -267,45 +267,51 @@ def ingest_workbook(db: Session, wb) -> dict:
         }
 
     # All valid — insert in dependency order within a single transaction
-    with transactional_session(db):
-        # Brands first (SKUs reference them)
-        brand_id_map: dict[str, int] = {}
-        for r in brand_records:
-            brand = Brand(**r)
-            db.add(brand)
-            db.flush()
-            brand_id_map[brand.name] = brand.id
+    try:
+        with transactional_session(db):
+            # Brands first (SKUs reference them)
+            brand_id_map: dict[str, int] = {}
+            for r in brand_records:
+                brand = Brand(**r)
+                db.add(brand)
+                db.flush()
+                brand_id_map[brand.name] = brand.id
 
-        # Retailers
-        for r in retailer_records:
-            db.add(Retailer(**r))
+            # Retailers
+            for r in retailer_records:
+                db.add(Retailer(**r))
 
-        # Warehouses (need flush to get IDs for manager linking)
-        warehouse_id_map: dict[str, int] = {}
-        for r in warehouse_records:
-            manager = r.pop("_manager")
-            warehouse = Warehouse(**r)
-            db.add(warehouse)
-            db.flush()
-            manager.warehouse_id = warehouse.id
-            warehouse_id_map[warehouse.name] = warehouse.id
+            # Warehouses (need flush to get IDs for manager linking)
+            warehouse_id_map: dict[str, int] = {}
+            for r in warehouse_records:
+                manager = r.pop("_manager")
+                warehouse = Warehouse(**r)
+                db.add(warehouse)
+                db.flush()
+                manager.warehouse_id = warehouse.id
+                warehouse_id_map[warehouse.name] = warehouse.id
 
-        # SKUs (resolve brand IDs — could be newly inserted or pre-existing)
-        for r in sku_records:
-            brand_name = r.pop("_brand_name")
-            brand_id = brand_id_map.get(brand_name)
-            if brand_id is None:
-                brand = db.query(Brand).filter(Brand.name == brand_name).first()
-                brand_id = brand.id if brand else None
-            r["brand_id"] = brand_id
-            db.add(SKU(**r))
+            # SKUs (resolve brand IDs — could be newly inserted or pre-existing)
+            for r in sku_records:
+                brand_name = r.pop("_brand_name")
+                brand_id = brand_id_map.get(brand_name)
+                if brand_id is None:
+                    brand = db.query(Brand).filter(Brand.name == brand_name).first()
+                    brand_id = brand.id if brand else None
+                r["brand_id"] = brand_id
+                db.add(SKU(**r))
 
-        # Beats (resolve warehouse IDs)
-        for r in beat_records:
-            wh_name = r.pop("_warehouse_name")
-            if wh_name and not r["warehouse_id"]:
-                r["warehouse_id"] = warehouse_id_map.get(wh_name)
-            db.add(Beat(**{k: v for k, v in r.items() if not k.startswith("_")}))
+            # Beats (resolve warehouse IDs)
+            for r in beat_records:
+                wh_name = r.pop("_warehouse_name")
+                if wh_name and not r["warehouse_id"]:
+                    r["warehouse_id"] = warehouse_id_map.get(wh_name)
+                db.add(Beat(**{k: v for k, v in r.items() if not k.startswith("_")}))
+    except Exception:
+        # The rollback undid the rows but not the ids they consumed — reclaim them
+        # so a retry of the same workbook starts where the failed run started.
+        reclaim_sequences(db, "brands", "retailers", "warehouses", "skus", "beats")
+        raise
 
     return {
         "brands":     {"inserted": len(brand_records),    "errors": []},
@@ -821,6 +827,12 @@ def ingest_daily_sales_workbook(db: Session, wb, warehouse_id: int, current_user
 
     except _ImportAbort:
         db.rollback()
+        # Same reclaim as the master import: the rolled-back rows released their ids
+        # but the sequences kept advancing.
+        reclaim_sequences(
+            db, "orders", "order_items", "order_trails", "retailers", "beats",
+            "accounts", "invoices", "invoice_lines",
+        )
         return {
             "format_detected": "unified",
             "orders_created": 0,
