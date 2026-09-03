@@ -9,13 +9,15 @@ Usage:
 
     # See what would change, touching nothing (the default):
     DATABASE_URL=postgresql://... python scripts/configure_company_profile.py \\
-        --config scripts/company_profile.json --qr-image ../ascend-frontend/public/qr.png
+        --config scripts/company_profile.json --qr-image scripts/qr.png
 
     # Actually write:
     DATABASE_URL=postgresql://... python scripts/configure_company_profile.py \\
-        --config scripts/company_profile.json --qr-image ../ascend-frontend/public/qr.png --apply
+        --config scripts/company_profile.json --qr-image scripts/qr.png --apply
 
-Run it from the ascend-backend directory (or set PYTHONPATH to it).
+Run it from the ascend-backend directory (or set PYTHONPATH to it). The QR lives at
+scripts/qr.png in this repo rather than in the frontend: the backend is what consumes it,
+and a server checkout has no frontend working tree.
 
 Why the QR is not simply re-uploaded every run: payment_qr_images is append-only and keyed
 by content digest, so re-running with the same file resolves to the existing row instead of
