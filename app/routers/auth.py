@@ -27,6 +27,13 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
+    # Every other endpoint goes through get_current_active_user, which rejects deleted and
+    # deactivated accounts on each request. This one checked only existence, so a
+    # deactivated user could still mint fresh tokens — they could not use them, since real
+    # endpoints recheck, but the inconsistency is worth closing now that the frontend
+    # actually calls this endpoint.
+    if user.deleted_at or not user.is_active:
+        raise HTTPException(status_code=401, detail="Inactive user")
     access_token, refresh_token = create_tokens(user)
     return {"access_token": access_token, "refresh_token": refresh_token}
 
