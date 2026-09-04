@@ -29,9 +29,12 @@ from app.models import (
 from app.models.payment_qr_image import digest_image
 from app.schemas.admin import (
     BrandCreate,
+    BrandUpdate,
     WarehouseCreate,
     RetailerCreate,
+    RetailerUpdate,
     SKUCreate,
+    SKUUpdate,
     InventoryReceiptCreate,
     GroupCreate,
     UserGroupUpdate,
@@ -66,6 +69,10 @@ def create_warehouse(db: Session, warehouse: WarehouseCreate):
     return db_warehouse
 
 def create_retailer(db: Session, retailer: RetailerCreate):
+    # Same beat-existence check update_retailer relies on: the FK alone does not catch this
+    # under the SQLite test harness, which does not enable PRAGMA foreign_keys.
+    if retailer.beat_id is not None and not db.query(Beat).filter(Beat.id == retailer.beat_id).first():
+        raise ValueError("Beat not found")
     db_retailer = Retailer(**retailer.dict())
     db.add(db_retailer)
     db.commit()
@@ -82,6 +89,58 @@ def create_sku(db: Session, sku: SKUCreate, current_user=None):
     db.commit()
     db.refresh(db_sku)
     return db_sku
+
+class RecordNotFoundError(ValueError):
+    """Raised when an update targets an id that does not exist, so the router can answer 404
+    rather than the 400 every other ValueError from this module means."""
+
+
+def _apply_update(db: Session, record, payload):
+    # exclude_unset, not exclude_none: an omitted key means "leave this column alone", while an
+    # explicit null means "clear it". Those are different requests and a partial edit form sends
+    # only the fields it touched.
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(record, key, value)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def update_brand(db: Session, brand_id: int, payload: BrandUpdate):
+    brand = db.query(Brand).filter(Brand.id == brand_id).first()
+    if not brand:
+        raise RecordNotFoundError("Brand not found")
+    return _apply_update(db, brand, payload)
+
+
+def update_retailer(db: Session, retailer_id: int, payload: RetailerUpdate):
+    retailer = db.query(Retailer).filter(Retailer.id == retailer_id).first()
+    if not retailer:
+        raise RecordNotFoundError("Retailer not found")
+    data = payload.model_dump(exclude_unset=True)
+    # beat_id goes through set_retailer_beat so the existence check there still runs — see the
+    # RPT-01 / D2 note on that function for why the FK alone is not enough here.
+    has_beat = "beat_id" in data
+    beat_id = data.pop("beat_id", None)
+    for key, value in data.items():
+        setattr(retailer, key, value)
+    db.commit()
+    db.refresh(retailer)
+    if has_beat:
+        retailer = set_retailer_beat(db, retailer_id, beat_id)
+    return retailer
+
+
+def update_sku(db: Session, sku_id: int, payload: SKUUpdate):
+    sku = db.query(SKU).filter(SKU.id == sku_id).first()
+    if not sku:
+        raise RecordNotFoundError("SKU not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "brand_id" in data and data["brand_id"] is not None:
+        if not db.query(Brand).filter(Brand.id == data["brand_id"]).first():
+            raise ValueError("Brand not found")
+    return _apply_update(db, sku, payload)
+
 
 def get_company_profile(db: Session):
     profile = db.query(CompanyProfile).order_by(CompanyProfile.id.asc()).first()

@@ -43,6 +43,16 @@ class BrandResponse(BaseModel):
     poc_phone_number: Optional[int] = None
     poc_email: Optional[str] = None
 
+# Partial update: every field optional so an omitted key means "leave alone". Subclassing the
+# Create schema keeps its validators — Pydantic skips validation of defaults, so an omitted
+# poc_phone_number does not trip the "required" branch of normalize_poc_phone_number.
+class BrandUpdate(BrandCreate):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    poc_name: Optional[str] = None
+    poc_phone_number: Optional[int] = None
+    poc_email: Optional[str] = None
+
 class WarehouseCreate(BaseModel):
     name: str
     location: Optional[str]
@@ -107,6 +117,7 @@ class RetailerCreate(BaseModel):
     assigned_salesman_id: Optional[int]
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    beat_id: Optional[int] = None
 
     @field_validator("mobile_number")
     @classmethod
@@ -157,6 +168,22 @@ class RetailerResponse(BaseModel):
     latitude: Optional[float]
     longitude: Optional[float]
     beat_id: Optional[int] = None
+
+class RetailerUpdate(RetailerCreate):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    mobile_number: Optional[int] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[int] = None
+    gst_number: Optional[str] = None
+    assigned_salesman_id: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    beat_id: Optional[int] = None
+
 
 class RetailerBeatUpdate(BaseModel):
     # RPT-01 / D2: an absent beat_id and an explicit null mean the same thing here —
@@ -209,6 +236,30 @@ class SKUResponse(BaseModel):
     length_cm: Optional[float]
     width_cm: Optional[float]
     height_cm: Optional[float]
+
+class SKUUpdate(SKUCreate):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    code: Optional[str] = None
+    brand_id: Optional[int] = None
+    hsn_code: Optional[str] = None
+    distributor_landing_price: Optional[float] = None
+    mrp: Optional[float] = None
+    discount_amount: Optional[float] = None
+    discount_percent: Optional[float] = None
+    rate: Optional[float] = None
+    sgst_percent: Optional[float] = None
+    sgst_amount: Optional[float] = None
+    cgst_percent: Optional[float] = None
+    cgst_amount: Optional[float] = None
+    igst_percent: Optional[float] = None
+    igst_amount: Optional[float] = None
+    amount: Optional[float] = None
+    weight: Optional[float] = None
+    length_cm: Optional[float] = None
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+
 
 class InventoryReceiptItem(BaseModel):
     sku_id: int

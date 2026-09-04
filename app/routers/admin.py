@@ -8,6 +8,10 @@ from app.services.admin import (
     create_warehouse,
     create_retailer,
     create_sku,
+    update_brand,
+    update_retailer,
+    update_sku,
+    RecordNotFoundError,
     add_inventory_receipt,
     get_inventory,
     get_orders_page,
@@ -39,14 +43,17 @@ from app.services.invoice import missing_company_invoice_fields
 from app.services.invoice_export import export_invoices_xlsx, export_invoices_csv
 from app.schemas.admin import (
     BrandCreate,
+    BrandUpdate,
     BrandResponse,
     WarehouseCreate,
     WarehouseResponse,
     EmployeeResponse,
     RetailerCreate,
+    RetailerUpdate,
     RetailerResponse,
     RetailerBeatUpdate,
     SKUCreate,
+    SKUUpdate,
     SKUResponse,
     InventoryReceiptCreate,
     InventoryPage,
@@ -91,7 +98,10 @@ def create_retailer_endpoint(
     db: Session = Depends(get_db),
     current_user = Depends(require_admin),
 ):
-    return create_retailer(db, retailer)
+    try:
+        return create_retailer(db, retailer)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/skus", response_model=SKUResponse)
 def create_sku_endpoint(
@@ -101,6 +111,50 @@ def create_sku_endpoint(
 ):
     try:
         return create_sku(db, sku, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Master-data edits are admin-only, deliberately narrower than the matching POSTs (an
+# accountant may create a brand but not rewrite one).
+@router.patch("/brands/{brand_id}", response_model=BrandResponse)
+def update_brand_endpoint(
+    brand_id: int,
+    payload: BrandUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return update_brand(db, brand_id, payload)
+    except RecordNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.patch("/retailers/{retailer_id}", response_model=RetailerResponse)
+def update_retailer_endpoint(
+    retailer_id: int,
+    payload: RetailerUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return update_retailer(db, retailer_id, payload)
+    except RecordNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.patch("/skus/{sku_id}", response_model=SKUResponse)
+def update_sku_endpoint(
+    sku_id: int,
+    payload: SKUUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return update_sku(db, sku_id, payload)
+    except RecordNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
