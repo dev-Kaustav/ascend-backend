@@ -12,6 +12,7 @@ from app.services.admin import (
     update_retailer,
     update_sku,
     RecordNotFoundError,
+    RetailerScopeError,
     add_inventory_receipt,
     get_inventory,
     get_orders_page,
@@ -96,10 +97,12 @@ def create_warehouse_endpoint(
 def create_retailer_endpoint(
     retailer: RetailerCreate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
+    current_user = Depends(require_roles("ADMIN", "SALESMAN")),
 ):
     try:
-        return create_retailer(db, retailer)
+        return create_retailer(db, retailer, current_user)
+    except RetailerScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -135,10 +138,12 @@ def update_retailer_endpoint(
     retailer_id: int,
     payload: RetailerUpdate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_admin),
+    current_user = Depends(require_roles("ADMIN", "SALESMAN")),
 ):
     try:
-        return update_retailer(db, retailer_id, payload)
+        return update_retailer(db, retailer_id, payload, current_user)
+    except RetailerScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except RecordNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

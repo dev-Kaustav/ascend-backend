@@ -43,6 +43,7 @@ from app.schemas.admin import (
 from app.models.enums import TransactionType, OrderStatus, EmployeeRole, PaymentStatus
 from app.services.transactions import transactional_session
 from app.core.security import get_password_hash
+from app.core.deps import get_role_value
 from app.services.finance import calculate_order_outstanding
 from app.services import inventory as inventory_service
 from app.services.order import scoped_orders_query
@@ -68,12 +69,31 @@ def create_warehouse(db: Session, warehouse: WarehouseCreate):
     db.refresh(db_warehouse)
     return db_warehouse
 
-def create_retailer(db: Session, retailer: RetailerCreate):
+class RetailerScopeError(Exception):
+    """A salesman reached for a retailer that is not theirs. Distinct from ValueError so the
+    router answers 403 rather than 400."""
+
+
+def _salesman_employee_id(current_user):
+    employee_id = getattr(current_user, "employee_id", None)
+    if not employee_id:
+        raise RetailerScopeError("Salesman is missing an employee record")
+    return employee_id
+
+
+def create_retailer(db: Session, retailer: RetailerCreate, current_user=None):
+    data = retailer.dict()
+    if current_user is not None and get_role_value(current_user) == "SALESMAN":
+        # A salesman never controls assignment. Their own id is stamped on, because
+        # order_form_lookups scopes their retailer list by it — an unassigned retailer would be
+        # invisible to the person who just created it. Coverage (beat) stays an admin decision.
+        data["assigned_salesman_id"] = _salesman_employee_id(current_user)
+        data["beat_id"] = None
     # Same beat-existence check update_retailer relies on: the FK alone does not catch this
     # under the SQLite test harness, which does not enable PRAGMA foreign_keys.
-    if retailer.beat_id is not None and not db.query(Beat).filter(Beat.id == retailer.beat_id).first():
+    if data.get("beat_id") is not None and not db.query(Beat).filter(Beat.id == data["beat_id"]).first():
         raise ValueError("Beat not found")
-    db_retailer = Retailer(**retailer.dict())
+    db_retailer = Retailer(**data)
     db.add(db_retailer)
     db.commit()
     db.refresh(db_retailer)
@@ -113,11 +133,18 @@ def update_brand(db: Session, brand_id: int, payload: BrandUpdate):
     return _apply_update(db, brand, payload)
 
 
-def update_retailer(db: Session, retailer_id: int, payload: RetailerUpdate):
+def update_retailer(db: Session, retailer_id: int, payload: RetailerUpdate, current_user=None):
     retailer = db.query(Retailer).filter(Retailer.id == retailer_id).first()
     if not retailer:
         raise RecordNotFoundError("Retailer not found")
     data = payload.model_dump(exclude_unset=True)
+    if current_user is not None and get_role_value(current_user) == "SALESMAN":
+        if retailer.assigned_salesman_id != _salesman_employee_id(current_user):
+            raise RetailerScopeError("Retailer is not assigned to this salesman")
+        # Dropped rather than rejected: the salesman UI does not offer these fields, and
+        # honouring them would let a salesman hand their outlet to someone else.
+        data.pop("assigned_salesman_id", None)
+        data.pop("beat_id", None)
     # beat_id goes through set_retailer_beat so the existence check there still runs — see the
     # RPT-01 / D2 note on that function for why the FK alone is not enough here.
     has_beat = "beat_id" in data
