@@ -60,8 +60,10 @@ DELETE_ORDER = [
     "orders",
 ]
 
-# Dropped only with --inventory reset.
-INVENTORY_TABLES = ["inventory_transactions"]
+# Emptied only with --inventory reset. Order matters here too: inventory_transactions and
+# order_item_batches both reference sku_batches, so the batches can only go once those are gone.
+# inventory is a leaf — nothing references it — so it can go last without ceremony.
+INVENTORY_TABLES = ["inventory_transactions", "sku_batches", "inventory"]
 
 PRESERVED = [
     "retailers", "users", "employees", "skus", "brands", "warehouses",
@@ -114,8 +116,8 @@ def main():
             "deleting orders. "
             "restore: additionally add back the stock the deleted orders consumed, returning "
             "levels to what they were before the test orders ran. "
-            "reset: also delete inventory_transactions and zero physical stock, for a full "
-            "reload from source data. "
+            "reset: delete every row from inventory_transactions, sku_batches and inventory, "
+            "for a full reload from source data. "
             "leave: touch nothing, accepting stock permanently reserved by deleted orders."
         ),
     )
@@ -187,8 +189,11 @@ def main():
               f"they record how")
         print("                          the stock arrived, and this mode keeps that stock)")
     elif args.inventory == "reset":
-        print(f"  inventory_transactions deleted ({before.get('inventory_transactions')} rows),")
-        print("  and total/remaining/reserved quantities zeroed on inventory and sku_batches")
+        print("  every row DELETED from:")
+        for table in INVENTORY_TABLES:
+            n = before.get(table)
+            print(f"    {table:24s} {'(no such table)' if n is None else format(n, ',')}")
+        print("  stock returns to not-existing, not to zero — for a full reload from source data")
     else:
         print("  nothing (stock stays reserved by orders that will no longer exist)")
 
@@ -258,9 +263,15 @@ def main():
                 conn.execute(text("UPDATE inventory SET reserved_quantity = 0 WHERE reserved_quantity <> 0"))
                 conn.execute(text("UPDATE sku_batches SET reserved_quantity = 0 WHERE reserved_quantity <> 0"))
             elif args.inventory == "reset":
-                conn.execute(text("DELETE FROM inventory_transactions"))
-                conn.execute(text("UPDATE inventory SET reserved_quantity = 0, total_quantity = 0"))
-                conn.execute(text("UPDATE sku_batches SET reserved_quantity = 0, remaining_quantity = 0"))
+                # Rows are deleted, not zeroed. Zeroing leaves a row per (sku, warehouse) and
+                # per batch asserting "we hold zero of this", which is a claim about stock
+                # rather than the absence of one — and a reload from source data then has to
+                # reconcile against those ghosts. add_inventory_receipt recreates an inventory
+                # row when none exists, so nothing needs them to survive.
+                for table in INVENTORY_TABLES:
+                    if before.get(table) is None:
+                        continue
+                    deleted[table] = conn.execute(text(f"DELETE FROM {table}")).rowcount
 
             if not args.keep_invoice_sequence:
                 # Safe only because every invoice row is gone; invoice_number is UNIQUE, so
@@ -279,7 +290,10 @@ def main():
         print("  invoice_number_seq restarted at 1")
 
     with engine.connect() as conn:
-        after = counts(conn, DELETE_ORDER)
+        # Include the stock tables when reset emptied them, so "remaining: 0" is a real check
+        # on this run rather than a report about a different set of tables.
+        verified = DELETE_ORDER + (INVENTORY_TABLES if args.inventory == "reset" else [])
+        after = counts(conn, verified)
         preserved_after = counts(conn, PRESERVED)
         remaining = sum(v for v in after.values() if v)
         print(f"\nRemaining in purged tables: {remaining:,}")
