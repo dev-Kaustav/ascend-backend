@@ -77,6 +77,12 @@ class AssignmentStatus(str, Enum):
     PENDING = "PENDING"
     ACCEPTED = "ACCEPTED"
 
+class RetailerRequestStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    WITHDRAWN = "WITHDRAWN"
+
 class TransactionType(str, Enum):
     IN = "IN"
     OUT = "OUT"

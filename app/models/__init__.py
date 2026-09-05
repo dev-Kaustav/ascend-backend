@@ -23,3 +23,4 @@ from .payment_qr_image import PaymentQRImage
 from .company_profile import CompanyProfile
 from .outlet_delivery import OutletDelivery
 from .outlet_assignment import OutletAssignment, OutletAssignmentItem
+from .retailer_request import RetailerRequest

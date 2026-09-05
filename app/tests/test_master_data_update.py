@@ -172,14 +172,11 @@ def test_master_data_updates_are_admin_only(client, db):
         for role in (EmployeeRole.ACCOUNTANT, EmployeeRole.SALESMAN, EmployeeRole.WAREHOUSE_MANAGER)
     }
 
+    # Salesmen included: they propose outlets through /retailer-requests and an admin approves,
+    # so they have no direct write on retailers at all. See test_retailer_requests.py.
     for headers in headers_by_role.values():
         assert client.patch(f"/admin/brands/{brand.id}", json={"name": "x"}, headers=headers).status_code == 403
         assert client.patch(f"/admin/skus/{sku.id}", json={"mrp": 1}, headers=headers).status_code == 403
-
-    # Retailers are the exception: a salesman may edit their own, so only the roles with no
-    # retailer relationship at all are locked out wholesale.
-    for role in (EmployeeRole.ACCOUNTANT, EmployeeRole.WAREHOUSE_MANAGER):
-        headers = headers_by_role[role]
         assert client.post("/admin/retailers", json=_retailer_payload("x"), headers=headers).status_code == 403
         assert client.patch(f"/admin/retailers/{retailer.id}", json={"city": "x"}, headers=headers).status_code == 403
 
@@ -264,69 +261,6 @@ def test_create_retailer_accepts_and_validates_beat(client, db):
 
     bad = client.post("/admin/retailers", json=payload("Dangling Beat", 9999), headers=headers)
     assert bad.status_code == 400
-
-
-def test_salesman_create_is_forced_onto_their_own_assignment(client, db):
-    mine, headers = _salesman(db, "Ravi")
-    other = Employee(name="Other", email="other@masterdata.test", role=EmployeeRole.SALESMAN)
-    beat = Beat(name="Someone Else Beat")
-    db.add_all([other, beat])
-    db.commit()
-
-    # Both assignment fields are supplied and both must be ignored: the retailer lands on the
-    # creating salesman with no beat, whatever the client asked for.
-    response = client.post(
-        "/admin/retailers",
-        json=_retailer_payload("Field Shop", assigned_salesman_id=other.id, beat_id=beat.id),
-        headers=headers,
-    )
-
-    assert response.status_code == 200
-    assert response.json()["assigned_salesman_id"] == mine.id
-    assert response.json()["beat_id"] is None
-
-
-def test_salesman_edits_only_their_own_retailer(client, db):
-    mine, headers = _salesman(db, "Ravi")
-    other, _ = _salesman(db, "Neha")
-    ours = Retailer(name="Ours", state="Delhi", assigned_salesman_id=mine.id)
-    theirs = Retailer(name="Theirs", state="Delhi", assigned_salesman_id=other.id)
-    db.add_all([ours, theirs])
-    db.commit()
-
-    ok = client.patch(f"/admin/retailers/{ours.id}", json={"city": "Noida"}, headers=headers)
-    assert ok.status_code == 200
-    assert ok.json()["city"] == "Noida"
-
-    denied = client.patch(f"/admin/retailers/{theirs.id}", json={"city": "Noida"}, headers=headers)
-    assert denied.status_code == 403
-
-
-def test_salesman_cannot_reassign_a_retailer_away(client, db):
-    mine, headers = _salesman(db, "Ravi")
-    other, _ = _salesman(db, "Neha")
-    beat = Beat(name="Coverage")
-    ours = Retailer(name="Ours", state="Delhi", assigned_salesman_id=mine.id)
-    db.add_all([beat, ours])
-    db.commit()
-
-    response = client.patch(
-        f"/admin/retailers/{ours.id}",
-        json={"city": "Noida", "assigned_salesman_id": other.id, "beat_id": beat.id},
-        headers=headers,
-    )
-
-    assert response.status_code == 200
-    assert response.json()["city"] == "Noida"
-    # The edit lands, the reassignment does not.
-    assert response.json()["assigned_salesman_id"] == mine.id
-    assert response.json()["beat_id"] is None
-
-
-def test_salesman_without_employee_record_is_refused(client, db):
-    headers = _auth_header_for(db, EmployeeRole.SALESMAN)
-
-    assert client.post("/admin/retailers", json=_retailer_payload("Orphan"), headers=headers).status_code == 403
 
 
 def test_admin_can_still_assign_retailers_freely(client, db):
