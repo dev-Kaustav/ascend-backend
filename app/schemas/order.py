@@ -20,7 +20,10 @@ class OrderCreate(BaseModel):
     payment_mode: Optional[str] = None
     payment_amount: Optional[float] = None
     salesman_id: Optional[int] = None
-    order_date: Optional[str] = None
+    # No order_date: a booked order is dated by the server clock. Accepting one let any
+    # caller backdate an order, which is the same class of problem as inventing a retailer —
+    # it rewrites history with nothing to check it against. Historical loads do not come
+    # through here; excel_import builds Order rows directly with their own created_at.
     delivery_date: Optional[str] = None
     panel_status: Optional[str] = None
     issue_category: Optional[str] = None

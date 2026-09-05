@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -7,7 +7,7 @@ from app.services.order import create_outgoing_order, update_order_status, Insuf
 from app.services import inventory as inventory_service
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.core.security import create_access_token
-from app.models import SKU, SKUBatch, Inventory, User, Brand, Retailer, Warehouse
+from app.models import SKU, SKUBatch, Inventory, Order, User, Brand, Retailer, Warehouse
 from app.models.enums import EmployeeRole
 
 def test_fefo_allocation(db):
@@ -238,3 +238,56 @@ def test_client_tax_rates_split_when_sku_has_no_gst_percentages(db):
     rates = {tax.tax_type: tax.rate for tax in order.items[0].taxes}
     assert sorted(rates) == ["CGST", "SGST"]
     assert sum(rates.values()) == Decimal("5.00")
+
+
+def test_client_supplied_order_date_cannot_backdate_an_order(client, db):
+    """A booked order is dated by the server clock.
+
+    order_date used to be an OrderCreate field that overwrote created_at, so any caller could
+    file an order into last month — the same shape of problem as inventing a retailer, since it
+    rewrites history with nothing to check it against. The field is gone; this pins that sending
+    it anyway is ignored rather than honoured, and that an old client doing so is not rejected.
+    """
+    from app.core.security import create_access_token, get_password_hash
+
+    brand = Brand(name="Backdate Brand")
+    warehouse = Warehouse(name="Backdate WH", location="Delhi", state="Delhi")
+    retailer = Retailer(name="Backdate Retailer", state="Delhi")
+    db.add_all([brand, warehouse, retailer])
+    db.commit()
+    sku = SKU(name="Backdate SKU", brand_id=brand.id, mrp=100)
+    db.add(sku)
+    db.commit()
+
+    today = inventory_service.current_business_date()
+    db.add(
+        SKUBatch(
+            sku_id=sku.id,
+            warehouse_id=warehouse.id,
+            expiry_date=today + timedelta(days=90),
+            quantity_received=10,
+            remaining_quantity=10,
+        )
+    )
+    db.add(Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=10))
+    admin = User(email="backdate-admin@ascend.com", password_hash=get_password_hash("x"), role=EmployeeRole.ADMIN)
+    db.add(admin)
+    db.commit()
+
+    headers = {"Authorization": f"Bearer {create_access_token({'user_id': admin.id, 'role': 'ADMIN'})}"}
+    response = client.post(
+        "/orders",
+        json={
+            "retailer_id": retailer.id,
+            "warehouse_id": warehouse.id,
+            "order_date": "2020-01-01",
+            "items": [{"sku_id": sku.id, "quantity": 1, "unit_price": 100, "discount_amount": 0}],
+        },
+        headers=headers,
+    )
+
+    # Accepted, not rejected: the extra key is ignored so an older client keeps working.
+    assert response.status_code == 200
+    created = db.query(Order).filter(Order.id == response.json()["id"]).first()
+    assert created.created_at.year != 2020
+    assert created.created_at.date() == datetime.now(created.created_at.tzinfo).date()

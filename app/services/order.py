@@ -474,16 +474,6 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
     payment_mode = (order.payment_mode or "").strip().upper()
     payment_amount = order.payment_amount
 
-    created_at_override = None
-    if order.order_date:
-        try:
-            created_at_override = datetime.fromisoformat(order.order_date)
-        except ValueError:
-            try:
-                parsed_date = date.fromisoformat(order.order_date)
-                created_at_override = datetime.combine(parsed_date, dtime.min)
-            except ValueError:
-                created_at_override = None
     with transactional_session(db):
         db_order = Order(
             from_entity_type="WAREHOUSE",
@@ -493,7 +483,6 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
             salesman_id=salesman_id,
             status=OrderStatus.PENDING,
             payment_status=PaymentStatus.CREDIT,
-            created_at=created_at_override,
         )
         db.add(db_order)
         db.flush()
