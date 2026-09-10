@@ -305,13 +305,45 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
         .subquery()
     )
 
+    # INVT-07: what the allocator would actually honour, computed with the same criterion
+    # and the same (remaining - reserved) expression as the batch loop in
+    # app/services/order.py. total_quantity - reserved_quantity is NOT this number: it
+    # counts expired units, and expired_quantity below counts reserved ones, so no
+    # arithmetic over the other three columns can recover it client-side.
+    allocatable_query = (
+        db.query(
+            SKUBatch.sku_id.label("sku_id"),
+            SKUBatch.warehouse_id.label("warehouse_id"),
+            func.sum(SKUBatch.remaining_quantity - SKUBatch.reserved_quantity).label("available_quantity"),
+        )
+        .filter(SKUBatch.remaining_quantity > SKUBatch.reserved_quantity)
+        .filter(inventory_service.allocatable_batch_criterion(as_of))
+    )
+    if warehouse_id:
+        allocatable_query = allocatable_query.filter(SKUBatch.warehouse_id == warehouse_id)
+    allocatable_subquery = (
+        allocatable_query
+        .group_by(SKUBatch.sku_id, SKUBatch.warehouse_id)
+        .subquery()
+    )
+
     base_query = db.query(Inventory)
     if warehouse_id:
         base_query = base_query.filter(Inventory.warehouse_id == warehouse_id)
     total = base_query.count()
     rows = (
         base_query
-        .with_entities(Inventory, expiry_subquery.c.earliest_expiry, expired_subquery.c.expired_quantity)
+        .with_entities(
+            Inventory,
+            expiry_subquery.c.earliest_expiry,
+            expired_subquery.c.expired_quantity,
+            allocatable_subquery.c.available_quantity,
+        )
+        .outerjoin(
+            allocatable_subquery,
+            (allocatable_subquery.c.sku_id == Inventory.sku_id)
+            & (allocatable_subquery.c.warehouse_id == Inventory.warehouse_id),
+        )
         .outerjoin(
             expiry_subquery,
             (expiry_subquery.c.sku_id == Inventory.sku_id)
@@ -334,10 +366,11 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
             "warehouse_id": inventory.warehouse_id,
             "total_quantity": round(float(inventory.total_quantity or 0), 2),
             "reserved_quantity": round(float(inventory.reserved_quantity or 0), 2),
+            "available_quantity": max(int(available_quantity or 0), 0),
             "earliest_expiry": earliest_expiry,
             "expired_quantity": int(expired_quantity or 0),
         }
-        for inventory, earliest_expiry, expired_quantity in rows
+        for inventory, earliest_expiry, expired_quantity, available_quantity in rows
     ]
     return items, total
 
@@ -1065,6 +1098,9 @@ def set_user_password(db: Session, user_id: int, password: str, acting_user: Use
     if acting_user.id == user_id and user.role != EmployeeRole.ADMIN:
         raise ValueError("Only admins can reset their own password here")
     user.password_hash = get_password_hash(password)
+    # An admin reset ends the target's sessions too. This is the case that matters most —
+    # a departing or compromised account whose holder still has a live token.
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
     db.refresh(user)
     return user

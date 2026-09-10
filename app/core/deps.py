@@ -25,6 +25,11 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if role and role != get_role_value(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token role mismatch")
+    # A password change bumps User.token_version, so any token minted before it fails here
+    # on its next request. Tokens predating this claim read as 0, matching the column's
+    # server default — a deploy signs nobody out, a password change signs out everybody.
+    if payload.get("tv", 0) != (user.token_version or 0):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired, sign in again")
     return user
 
 def get_current_active_user(current_user = Depends(get_current_user)):

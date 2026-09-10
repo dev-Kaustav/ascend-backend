@@ -73,35 +73,43 @@ def test_fefo_allocation(db):
 
 def test_insufficient_stock(db):
     brand = Brand(name="Brand")
-    db.add(brand)
+    warehouse = Warehouse(name="Short WH", location="Delhi", state="Delhi")
+    db.add_all([brand, warehouse])
     db.commit()
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.commit()
-    batch = SKUBatch(sku_id=sku.id, warehouse_id=1, quantity_received=5, remaining_quantity=5)
+    batch = SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=5, remaining_quantity=5)
     db.add(batch)
     db.commit()
-    inventory = Inventory(sku_id=sku.id, warehouse_id=1, total_quantity=5)
+    inventory = Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=5)
     db.add(inventory)
     db.commit()
     user = User(email="admin2@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
     db.add(user)
     db.commit()
-    order = OrderCreate(retailer_id=1, items=[OrderItemCreate(sku_id=sku.id, quantity=10, unit_price=100, discount_amount=0)])
-    with pytest.raises(InsufficientStockError):
+    order = OrderCreate(retailer_id=1, warehouse_id=warehouse.id, items=[OrderItemCreate(sku_id=sku.id, quantity=10, unit_price=100, discount_amount=0)])
+    with pytest.raises(InsufficientStockError) as excinfo:
         create_outgoing_order(db, order, user)
+    # INVT-07: the refusal has to be actionable — which SKU, which warehouse, how short.
+    message = str(excinfo.value)
+    assert "Test SKU" in message
+    assert "Short WH" in message
+    assert "requested 10" in message
+    assert "available 5" in message
 
 
 def test_insufficient_stock_returns_409(client, db):
     brand = Brand(name="Brand")
-    db.add(brand)
+    warehouse = Warehouse(name="409 WH", location="Delhi", state="Delhi")
+    db.add_all([brand, warehouse])
     db.flush()
     sku = SKU(name="Test SKU", brand_id=brand.id)
     db.add(sku)
     db.flush()
-    batch = SKUBatch(sku_id=sku.id, warehouse_id=1, quantity_received=5, remaining_quantity=5)
+    batch = SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=5, remaining_quantity=5)
     db.add(batch)
-    inventory = Inventory(sku_id=sku.id, warehouse_id=1, total_quantity=5)
+    inventory = Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=5)
     db.add(inventory)
     admin = User(email="admin@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
     db.add(admin)
@@ -112,12 +120,83 @@ def test_insufficient_stock_returns_409(client, db):
         "/orders",
         json={
             "retailer_id": 1,
-            "warehouse_id": 1,
+            "warehouse_id": warehouse.id,
             "items": [{"sku_id": sku.id, "quantity": 10, "unit_price": 100, "discount_amount": 0}]
         },
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 409
+    # A string detail, not a list of objects: the order form renders it directly.
+    assert "409 WH" in response.json()["detail"]
+
+
+def test_order_without_warehouse_is_rejected(client, db):
+    """INVT-07: no silent fallback to warehouse 1. The order that prompted this booked
+    against a warehouse nobody chose and came back as 'Insufficient stock'."""
+    brand = Brand(name="Brand")
+    warehouse = Warehouse(name="Chosen WH", location="Delhi", state="Delhi")
+    db.add_all([brand, warehouse])
+    db.flush()
+    sku = SKU(name="Test SKU", brand_id=brand.id)
+    db.add(sku)
+    db.flush()
+    db.add(SKUBatch(sku_id=sku.id, warehouse_id=warehouse.id, quantity_received=50, remaining_quantity=50))
+    db.add(Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=50))
+    admin = User(email="admin-nowh@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add(admin)
+    db.commit()
+    token = create_access_token({"user_id": admin.id, "role": EmployeeRole.ADMIN.value})
+
+    response = client.post(
+        "/orders",
+        json={
+            "retailer_id": 1,
+            "items": [{"sku_id": sku.id, "quantity": 10, "unit_price": 100, "discount_amount": 0}]
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Select a warehouse for this order."
+    assert db.query(Order).count() == 0
+
+
+def test_order_against_unknown_warehouse_is_rejected(db):
+    brand = Brand(name="Brand")
+    db.add(brand)
+    db.commit()
+    sku = SKU(name="Test SKU", brand_id=brand.id)
+    db.add(sku)
+    user = User(email="admin-badwh@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add(user)
+    db.commit()
+    order = OrderCreate(retailer_id=1, warehouse_id=9999, items=[OrderItemCreate(sku_id=sku.id, quantity=1, unit_price=100, discount_amount=0)])
+    with pytest.raises(ValueError, match="Warehouse not found."):
+        create_outgoing_order(db, order, user)
+
+
+def test_stock_in_another_warehouse_names_the_warehouse_ordered_against(db):
+    """The reported incident: stock received into warehouse B, order placed against A."""
+    brand = Brand(name="Brand")
+    warehouse_a = Warehouse(name="WH A", location="Delhi", state="Delhi")
+    warehouse_b = Warehouse(name="WH B", location="Delhi", state="Delhi")
+    db.add_all([brand, warehouse_a, warehouse_b])
+    db.commit()
+    sku = SKU(name="Roasted Peanuts", brand_id=brand.id)
+    db.add(sku)
+    db.commit()
+    db.add(SKUBatch(sku_id=sku.id, warehouse_id=warehouse_b.id, quantity_received=100, remaining_quantity=100))
+    db.add(Inventory(sku_id=sku.id, warehouse_id=warehouse_b.id, total_quantity=100))
+    user = User(email="admin-crosswh@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
+    db.add(user)
+    db.commit()
+
+    order = OrderCreate(retailer_id=1, warehouse_id=warehouse_a.id, items=[OrderItemCreate(sku_id=sku.id, quantity=36, unit_price=10, discount_amount=0)])
+    with pytest.raises(InsufficientStockError) as excinfo:
+        create_outgoing_order(db, order, user)
+    message = str(excinfo.value)
+    assert "WH A" in message
+    assert "WH B" not in message
+    assert "available 0" in message
 
 
 def test_order_taxes_use_warehouse_and_retailer_state(db):

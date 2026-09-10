@@ -16,6 +16,11 @@ class User(Base):
     retailer_id = Column(Integer, ForeignKey("retailers.id"), nullable=True)
     role = Column(Enum(EmployeeRole, name="employee_role"), nullable=False)
     is_active = Column(Boolean, default=True)
+    # Bumped whenever this user's password changes, by them or by an admin. Every token
+    # carries the value it was minted under, so bumping it makes every token issued
+    # earlier fail authentication on its next request — the only way to end a session
+    # early when the tokens themselves are stateless JWTs and nothing tracks them.
+    token_version = Column(Integer, nullable=False, server_default="0", default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 

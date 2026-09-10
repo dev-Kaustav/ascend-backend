@@ -16,7 +16,7 @@ from another service.
 """
 from datetime import date
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 
 from app.models import SKUBatch
 
@@ -40,3 +40,33 @@ def allocatable_batch_criterion(as_of: date):
     """Exact complement of expired_batch_criterion over every row, including
     expiry_date IS NULL (not expired) and expiry_date == as_of (still good today)."""
     return or_(SKUBatch.expiry_date.is_(None), SKUBatch.expiry_date >= as_of)
+
+
+def available_quantities(db, warehouse_id: int, sku_ids) -> dict[int, int]:
+    """Units the allocator could reserve right now, per sku, at one warehouse (INVT-07).
+
+    Same grain and same expression as the batch loop in app/services/order.py: the sum of
+    (remaining_quantity - reserved_quantity) over allocatable batches. Deliberately NOT
+    Inventory.total_quantity - Inventory.reserved_quantity, which counts expired units and
+    so over-reports. SKUs with no allocatable batch are absent from the mapping; callers
+    read a missing key as zero.
+    """
+    sku_ids = list(sku_ids)
+    if not sku_ids:
+        return {}
+    as_of = current_business_date()
+    rows = (
+        db.query(
+            SKUBatch.sku_id,
+            func.sum(SKUBatch.remaining_quantity - SKUBatch.reserved_quantity),
+        )
+        .filter(
+            SKUBatch.sku_id.in_(sku_ids),
+            SKUBatch.warehouse_id == warehouse_id,
+            SKUBatch.remaining_quantity > SKUBatch.reserved_quantity,
+            allocatable_batch_criterion(as_of),
+        )
+        .group_by(SKUBatch.sku_id)
+        .all()
+    )
+    return {sku_id: int(total or 0) for sku_id, total in rows}

@@ -1,7 +1,7 @@
 from datetime import datetime, date, time as dtime
 from decimal import Decimal
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from app.models import (
     Order,
@@ -239,6 +239,49 @@ def _tax_rows_for_item(sku: SKU | None, item, inter_state: bool) -> list[dict]:
         return [{"tax_type": "CGST", "rate": half}, {"tax_type": "SGST", "rate": _round_money(fallback_same_state - half)}]
     return []
 
+def _insufficient_stock_message(db: Session, sku_id: int, warehouse_id: int, requested: int, available: int, as_of: date) -> str:
+    """Name the SKU, the warehouse, and both numbers in an out-of-stock refusal (INVT-07).
+
+    Called only from the two raise sites below, never on the happy path: an order that
+    succeeds pays nothing for this. A bare "Insufficient stock" cannot distinguish stock
+    that is absent from stock that is present but expired, or from stock that is sitting
+    in a different warehouse than the one the order was placed against — and an operator
+    looking at a full warehouse reads it as a system fault.
+    """
+    sku = db.query(SKU).filter(SKU.id == sku_id).first()
+    if sku is None:
+        sku_label = f"SKU {sku_id}"
+    elif sku.code:
+        sku_label = f"{sku.name} ({sku.code})"
+    else:
+        sku_label = sku.name or f"SKU {sku_id}"
+    warehouse = db.query(Warehouse).filter(Warehouse.id == warehouse_id).first()
+    warehouse_label = warehouse.name if warehouse else f"warehouse {warehouse_id}"
+    # Same predicate the allocator refuses on (D1) — re-deriving the date test here would
+    # let the explanation drift from the decision it explains.
+    expired_units = db.query(
+        func.sum(SKUBatch.remaining_quantity - SKUBatch.reserved_quantity)
+    ).filter(
+        SKUBatch.sku_id == sku_id,
+        SKUBatch.warehouse_id == warehouse_id,
+        inventory_service.expired_batch_criterion(as_of),
+    ).scalar() or 0
+
+    message = (
+        f"Insufficient stock for {sku_label} at {warehouse_label}: "
+        f"requested {requested}, available {available}."
+    )
+    if expired_units <= 0:
+        return message
+    if available <= 0:
+        return (
+            f"Insufficient stock for {sku_label} at {warehouse_label}: requested {requested}, "
+            f"available 0 — all {expired_units} unit(s) at this warehouse are expired and "
+            "cannot be allocated."
+        )
+    return f"{message} {expired_units} expired unit(s) are excluded from the available figure."
+
+
 def _reserve_inventory_for_order(db: Session, order: Order):
     warehouse_id = order.from_entity_id
     # Resolved once per call, not once per batch, so a call that straddles
@@ -255,13 +298,17 @@ def _reserve_inventory_for_order(db: Session, order: Order):
         ).with_for_update().first()
         available_inventory = (inventory.total_quantity or 0) - (inventory.reserved_quantity or 0) if inventory else 0
         # This aggregate pre-check counts expired units, so an order can pass
-        # here and still run out of allocatable batches below. That's fine:
-        # the batch loop's "remaining_qty > 0" check is the authority on
-        # availability, and the caller sees the same InsufficientStockError /
-        # 409 either way (D5 — tightening this would cost a second query per
-        # item for no behavioural difference).
+        # here and still run out of allocatable batches below. That stays true
+        # (D5): the batch loop's "remaining_qty > 0" check is the authority on
+        # availability, and this remains a cheap early-out costing no extra
+        # query per item. What changed (INVT-07) is that the refusal no longer
+        # hides which SKU, which warehouse, and how much was actually
+        # allocatable — that lookup runs only on the failing path.
         if not inventory or available_inventory < item.quantity:
-            raise InsufficientStockError("Insufficient stock")
+            raise InsufficientStockError(_insufficient_stock_message(
+                db, item.sku_id, warehouse_id, item.quantity,
+                available_inventory if inventory else 0, as_of,
+            ))
 
         batches = (
             db.query(SKUBatch)
@@ -295,7 +342,12 @@ def _reserve_inventory_for_order(db: Session, order: Order):
             inventory.reserved_quantity = (inventory.reserved_quantity or 0) + allocate_qty
             remaining_qty -= allocate_qty
         if remaining_qty > 0:
-            raise InsufficientStockError("Insufficient stock")
+            # item.quantity - remaining_qty is exactly what the batches could supply, so
+            # the true allocatable figure is already in hand — no query needed for it.
+            raise InsufficientStockError(_insufficient_stock_message(
+                db, item.sku_id, warehouse_id, item.quantity,
+                item.quantity - remaining_qty, as_of,
+            ))
 
 def _dispatch_reserved_inventory(db: Session, order: Order):
     if not _is_outgoing_order(order):
@@ -467,8 +519,16 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
     elif order.salesman_id:
         salesman_id = order.salesman_id
 
-    warehouse_id = order.warehouse_id or 1
+    # INVT-07: no silent default. Falling back to warehouse 1 booked the order against a
+    # warehouse nobody chose, so stock received into any other warehouse read back as an
+    # out-of-stock condition — the failure this error path exists to describe, reported
+    # against the wrong warehouse.
+    if not order.warehouse_id:
+        raise ValueError("Select a warehouse for this order.")
+    warehouse_id = order.warehouse_id
     warehouse = db.query(Warehouse).filter(Warehouse.id == warehouse_id).first()
+    if not warehouse:
+        raise ValueError("Warehouse not found.")
     retailer = db.query(Retailer).filter(Retailer.id == order.retailer_id).first()
     inter_state = _is_inter_state(warehouse, retailer)
     payment_mode = (order.payment_mode or "").strip().upper()

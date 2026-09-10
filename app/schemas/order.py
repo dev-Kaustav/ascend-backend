@@ -16,6 +16,9 @@ class OrderItemCreate(BaseModel):
 class OrderCreate(BaseModel):
     retailer_id: int
     items: list[OrderItemCreate]
+    # Optional on the wire, required in practice: create_outgoing_order rejects a missing
+    # warehouse with a ValueError -> 400 whose detail is a string the order form can render.
+    # A required field here would 422 with a list-of-objects detail instead (INVT-07).
     warehouse_id: Optional[int] = None
     payment_mode: Optional[str] = None
     payment_amount: Optional[float] = None

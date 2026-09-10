@@ -120,6 +120,21 @@ def test_batch_expired_the_previous_day_is_not_allocatable(db, as_of):
         create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
 
 
+def test_expired_only_stock_says_expired_not_just_short(db, as_of):
+    """INVT-07: 'Insufficient stock' sent operators hunting a phantom shortage when the
+    warehouse was full of stock the allocator refuses on expiry grounds."""
+    sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of - timedelta(days=1), 5)])
+    with pytest.raises(InsufficientStockError) as excinfo:
+        create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    message = str(excinfo.value)
+    assert "available 0" in message
+    assert "expired" in message
+    assert "Expiry SKU" in message
+    assert "Expiry WH" in message
+    # Distinct from the dispatch-time wording, which describes a different decision.
+    assert "Cancel and re-place" not in message
+
+
 def test_batch_without_expiry_date_is_allocatable(db, as_of):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(None, 5)])
     result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)

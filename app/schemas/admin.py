@@ -278,6 +278,9 @@ class InventoryResponse(BaseModel):
     warehouse_id: int
     total_quantity: float
     reserved_quantity: float = 0
+    # Units the allocator would honour right now. Defined by the batch loop in
+    # app/services/order.py, not by arithmetic over the columns above (INVT-07).
+    available_quantity: float = 0
     earliest_expiry: Optional[date] = None
     expired_quantity: int = 0
 

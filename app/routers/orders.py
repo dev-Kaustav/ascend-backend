@@ -7,6 +7,7 @@ from app.services.invoice_pdf import regenerate_invoice_pdf
 from app.services.admin import get_orders_page
 from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceView, OrderListPage
 from app.core.deps import require_roles
+from app.services import inventory as inventory_service
 from app.models import User
 
 router = APIRouter()
@@ -62,6 +63,27 @@ def order_form_lookups_endpoint(
         return order_form_lookups(db, current_user)
     except OrderScopeError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+@router.get("/availability")
+def order_stock_availability(
+    warehouse_id: int = Query(..., ge=1),
+    sku_ids: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("ADMIN", "ACCOUNTANT", "SALESMAN", "WAREHOUSE_MANAGER")),
+):
+    """What the order form shows beside each line before it is submitted (INVT-07).
+
+    Read-only and never cached by the client: the number is only useful if it is the one
+    the allocator would honour at this instant. It is advisory — POST /orders re-checks
+    under FOR UPDATE and remains the authority.
+    """
+    try:
+        ids = [int(value) for value in sku_ids.split(",") if value.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="sku_ids must be a comma-separated list of ids")
+    available = inventory_service.available_quantities(db, warehouse_id, ids)
+    return {"warehouse_id": warehouse_id, "available": {str(sku_id): available.get(sku_id, 0) for sku_id in ids}}
 
 
 @router.get("/{order_id}", response_model=OrderResponse)

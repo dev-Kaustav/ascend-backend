@@ -159,6 +159,41 @@ def test_reported_expired_stock_is_exactly_what_allocation_refuses(db, as_of):
         create_outgoing_order(db, order, user)
 
 
+def test_reported_available_stock_is_exactly_what_allocation_honours(db, as_of):
+    """INVT-07: the screen's "Available" and the allocator must agree to the unit.
+
+    Three batches: 6 expired, 10 fresh of which 4 are already reserved, 3 with no expiry.
+    Allocatable = (10-4) + 3 = 9. total - reserved would say 15, and
+    total - reserved - expired would say 9 only by accident — expired_quantity counts
+    reserved units too, so that arithmetic double-subtracts whenever the two overlap.
+    """
+    sku, warehouse, retailer, user, _ = _seed(
+        db,
+        [
+            (as_of - timedelta(days=1), 6, 0),
+            (as_of + timedelta(days=30), 10, 4),
+            (None, 3, 0),
+        ],
+    )
+    items, total = get_inventory(db)
+    row = _row_for(items, sku.id, warehouse.id)
+    assert row["available_quantity"] == 9
+    assert row["total_quantity"] == 19
+    assert inventory_service.available_quantities(db, warehouse.id, [sku.id]) == {sku.id: 9}
+
+    def _order(quantity):
+        return OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=quantity, unit_price=100, discount_amount=0)],
+        )
+
+    with pytest.raises(InsufficientStockError):
+        create_outgoing_order(db, _order(10), user)
+    db.rollback()
+    assert create_outgoing_order(db, _order(9), user) is not None
+
+
 def test_inventory_endpoint_query_count_does_not_grow_with_rows(db, as_of):
     warehouse = Warehouse(name="Query Count WH", location="Delhi", state="Delhi")
     db.add(warehouse)
@@ -288,3 +323,45 @@ def test_inventory_endpoints_forbid_authenticated_non_manager(db, client, as_of)
 
     assert client.get("/admin/inventory", headers=headers).status_code == 403
     assert client.post("/admin/inventory", headers=headers, json=receipt).status_code == 403
+
+
+def test_availability_endpoint_reports_allocatable_stock_to_order_takers(client, db, as_of):
+    """INVT-07: the order form needs this figure, and salesmen cannot read /admin/inventory.
+
+    Same three-batch shape as the allocator test above: 6 expired, 10 fresh with 4 already
+    reserved, 3 undated. Allocatable = 9.
+    """
+    from app.core.security import create_access_token, get_password_hash
+
+    sku, warehouse, retailer, user, _ = _seed(
+        db,
+        [
+            (as_of - timedelta(days=1), 6, 0),
+            (as_of + timedelta(days=30), 10, 4),
+            (None, 3, 0),
+        ],
+        sku_suffix="-avail",
+    )
+    salesman = User(
+        email="salesman-avail@ascend.com",
+        password_hash=get_password_hash("x"),
+        role=EmployeeRole.SALESMAN,
+    )
+    db.add(salesman)
+    db.commit()
+    headers = {
+        "Authorization": f"Bearer {create_access_token({'user_id': salesman.id, 'role': 'SALESMAN'})}"
+    }
+
+    response = client.get(
+        f"/orders/availability?warehouse_id={warehouse.id}&sku_ids={sku.id}",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["available"] == {str(sku.id): 9}
+    # A SKU with no stock at this warehouse reports zero rather than going missing.
+    response = client.get(
+        f"/orders/availability?warehouse_id={warehouse.id}&sku_ids={sku.id},999999",
+        headers=headers,
+    )
+    assert response.json()["available"]["999999"] == 0
