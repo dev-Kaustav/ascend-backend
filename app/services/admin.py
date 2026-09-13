@@ -549,12 +549,13 @@ def get_order_export_rows(
     order_salesman = aliased(Employee)
     retailer_salesman = aliased(Employee)
     query = (
-        db.query(Order, OrderItem, SKU, Retailer, order_salesman, retailer_salesman)
+        db.query(Order, OrderItem, SKU, Retailer, order_salesman, retailer_salesman, Invoice)
         .join(OrderItem, OrderItem.order_id == Order.id)
         .join(SKU, SKU.id == OrderItem.sku_id)
         .join(Retailer, Retailer.id == Order.to_entity_id)
         .outerjoin(order_salesman, order_salesman.id == Order.salesman_id)
         .outerjoin(retailer_salesman, retailer_salesman.id == Retailer.assigned_salesman_id)
+        .outerjoin(Invoice, Invoice.order_id == Order.id)
         .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
     )
     query = _apply_order_filters(
@@ -569,7 +570,7 @@ def get_order_export_rows(
     query = query.order_by(Order.created_at.desc(), Order.id.desc(), OrderItem.id.asc())
 
     rows = []
-    for order, item, sku, retailer, order_rep, retailer_rep in query.all():
+    for order, item, sku, retailer, order_rep, retailer_rep, invoice in query.all():
         created_at = _naive_datetime(order.created_at)
         order_date = created_at.date() if created_at else None
         quantity = float(item.quantity or 0)
@@ -583,6 +584,7 @@ def get_order_export_rows(
                 "Created At": created_at,
                 "Order Date": order_date,
                 "Order ID": order.id,
+                "Invoice Number": invoice.invoice_number if invoice else None,
                 "Customer Name ( Retailer Name)": retailer.name,
                 "Retailer ID": retailer.id,
                 "SKU": sku.name,
@@ -620,6 +622,7 @@ def export_orders_excel(
         "Created At",
         "Order Date",
         "Order ID",
+        "Invoice Number",
         "Customer Name ( Retailer Name)",
         "Retailer ID",
         "SKU",
@@ -643,13 +646,17 @@ def export_orders_excel(
         sheet.append([row.get(header) for header in headers])
 
     sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
 
-    date_formats = {1: "yyyy-mm-dd hh:mm", 2: "yyyy-mm-dd"}
+    col = {header: idx for idx, header in enumerate(headers, start=1)}
+
+    date_formats = {col["Created At"]: "yyyy-mm-dd hh:mm", col["Order Date"]: "yyyy-mm-dd"}
     for col_idx, fmt in date_formats.items():
         for cell in sheet.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
             cell[0].number_format = fmt
 
-    for col_idx in (7, 10, 11, 12, 13):
+    for header in ("SKU Quantity", "MRP", "Discount %", "Amount", "Rate"):
+        col_idx = col[header]
         for cell in sheet.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
             cell[0].number_format = "0.00"
 
