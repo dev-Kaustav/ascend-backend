@@ -8,7 +8,7 @@ COMPOSE_BASE = docker compose -f docker-compose.yml
 pull:
 	git pull --ff-only
 
-dev: pull
+dev:
 	$(COMPOSE_BASE) up --build -d
 	$(COMPOSE_BASE) exec app alembic upgrade head
 
