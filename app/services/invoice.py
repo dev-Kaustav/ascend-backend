@@ -10,10 +10,10 @@ import hashlib
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.models import CompanyProfile, Invoice, InvoiceLine, Retailer, SKU, Warehouse
+from app.models import Brand, CompanyProfile, Invoice, InvoiceLine, Retailer, SKU, Warehouse
 from app.models.enums import InvoiceStatus, InvoiceType, SupplyType
 from app.models.invoice import DEFAULT_UQC
 from app.services.finance import calculate_order_item_totals, _round_money
@@ -26,21 +26,78 @@ ZERO = Decimal("0")
 _KNOWN_TAX_PREFIXES = {"CGST": "cgst", "SGST": "sgst", "IGST": "igst", "CESS": "cess"}
 
 
-def _next_invoice_serial(db: Session) -> int:
-    """Draw the next invoice serial.
+class MultiBrandInvoiceError(Exception):
+    """Raised when an order's lines span more than one brand.
 
-    Production path: `nextval('invoice_number_seq')` (migration 0045). Atomic, no
-    collision-check query, no retry loop — a collision is a bug to surface, not
-    something to paper over (D-04).
-
-    The `!= "postgresql"` branch below only ever fires against the SQLite test engine
-    (`app/tests/conftest.py`), which has no sequence object. It is NOT the production
-    path; it exists purely so this module is importable and testable without Postgres.
+    The invoice number carries a single brand code (ASC/JAB/0001), so a mixed-brand
+    order has no correct number to issue. Ascend's orders are single-brand in practice;
+    this surfaces the case loudly at dispatch rather than stamping an arbitrary brand
+    onto a legal tax record that can never be corrected (invoices are immutable, D-01).
     """
-    if db.get_bind().dialect.name != "postgresql":
-        max_serial = db.query(func.max(Invoice.invoice_serial)).scalar()
-        return int(max_serial or 0) + 1
-    return db.execute(text("SELECT nextval('invoice_number_seq')")).scalar_one()
+
+
+INVOICE_SERIES_CODE_LENGTH = 3
+
+
+def brand_series_code(brand_name: str | None) -> str:
+    """Derive the brand segment of an invoice number from the brand name.
+
+    First three alphanumerics, uppercased: "Jabsons Foods" -> "JAB". Shorter names yield
+    a shorter code rather than being padded.
+
+    Two brands sharing a three-letter prefix derive the *same* code. That is tolerated,
+    not prevented: the counter is keyed on the code (see InvoiceNumberCounter), so they
+    share one series and their numbers still never collide.
+    """
+    cleaned = "".join(ch for ch in (brand_name or "") if ch.isalnum())
+    code = cleaned[:INVOICE_SERIES_CODE_LENGTH].upper()
+    if not code:
+        raise ValueError(f"brand name {brand_name!r} yields no invoice series code")
+    return code
+
+
+def _order_series_code(db: Session, order) -> str:
+    """The series code for an order, via the single brand its lines belong to."""
+    sku_ids = {item.sku_id for item in order.items}
+    if not sku_ids:
+        raise MultiBrandInvoiceError(f"order {order.id} has no lines to invoice")
+
+    rows = (
+        db.query(Brand.id, Brand.name)
+        .join(SKU, SKU.brand_id == Brand.id)
+        .filter(SKU.id.in_(sku_ids))
+        .distinct()
+        .all()
+    )
+    if len(rows) != 1:
+        names = sorted(name for _, name in rows)
+        raise MultiBrandInvoiceError(
+            f"order {order.id} spans {len(rows)} brands ({', '.join(names)}); "
+            "an invoice number carries exactly one brand code"
+        )
+    return brand_series_code(rows[0][1])
+
+
+def _next_series_serial(db: Session, series_code: str) -> int:
+    """Draw the next serial within one brand series.
+
+    A single atomic statement — upsert-and-increment, returning the new value — so two
+    concurrent dispatches for the same brand can never read the same serial. This keeps
+    D-04's rule (the database allocates, never a read-modify-write in Python) now that a
+    global `nextval` can no longer express a per-brand series.
+    """
+    return db.execute(
+        text(
+            """
+            INSERT INTO invoice_number_counters (series_code, last_serial)
+            VALUES (:series_code, 1)
+            ON CONFLICT (series_code) DO UPDATE
+                SET last_serial = invoice_number_counters.last_serial + 1
+            RETURNING last_serial
+            """
+        ),
+        {"series_code": series_code},
+    ).scalar_one()
 
 
 # The supplier-side fields a valid GST tax invoice must carry, declared here — beside
@@ -84,14 +141,17 @@ def _get_or_create_company_profile(db: Session) -> CompanyProfile:
     return profile
 
 
-def next_invoice_number(db: Session) -> tuple[str, int]:
-    """Return (formatted_number, serial). Does not read or write the old
-    read-modify-write counter column on company_profile — that column was dropped in
-    plan 02-03's migration 0046 (D-04); this function never depended on it."""
+def next_invoice_number(db: Session, series_code: str) -> tuple[str, int]:
+    """Return (formatted_number, serial) for one brand series, e.g. ("ASC/JAB/0001", 1).
+
+    Does not read or write the old read-modify-write counter column on company_profile —
+    that column was dropped in plan 02-03's migration 0046 (D-04); this function never
+    depended on it.
+    """
     profile = _get_or_create_company_profile(db)
     prefix = (profile.invoice_prefix or "ASC").strip().upper() or "ASC"
-    serial = _next_invoice_serial(db)
-    return f"{prefix}{serial:06d}", serial
+    serial = _next_series_serial(db, series_code)
+    return f"{prefix}/{series_code}/{serial:04d}", serial
 
 
 def _tax_components_for_item(item, gst_amount: Decimal) -> dict[str, Decimal]:
@@ -228,8 +288,10 @@ def issue_invoice_for_order(
         invoice.invoice_number = invoice_number
         invoice.invoice_serial = None
     else:
-        number, serial = next_invoice_number(db)
+        series_code = _order_series_code(db, order)
+        number, serial = next_invoice_number(db, series_code)
         invoice.invoice_number = number
+        invoice.invoice_series = series_code
         invoice.invoice_serial = serial
 
     sku_ids = [item.sku_id for item in order.items]

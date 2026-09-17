@@ -10,6 +10,7 @@ from .inventory_transaction import InventoryTransaction
 from .beat import Beat
 from .order import Order
 from .invoice import Invoice, InvoiceLine
+from .invoice_number_counter import InvoiceNumberCounter
 from .order_item import OrderItem
 from .order_item_tax import OrderItemTax
 from .order_item_batch import OrderItemBatch

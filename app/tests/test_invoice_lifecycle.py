@@ -87,7 +87,7 @@ def test_dispatch_issues_exactly_one_invoice(db):
 
     assert db.query(Invoice).count() == 1
     assert order.invoice is not None
-    assert re.fullmatch(r"ASC\d{6}", order.invoice_number)
+    assert re.fullmatch(r"ASC/[A-Z0-9]{1,3}/\d{4}", order.invoice_number)
     assert order.invoice.order_id == order.id
     assert order.invoice.status == "ISSUED"
     assert len(order.invoice.lines) == len(order.items)

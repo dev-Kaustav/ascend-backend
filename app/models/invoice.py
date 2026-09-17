@@ -50,11 +50,18 @@ class Invoice(Base):
         state_check_constraint("invoices", column="place_of_supply"),
         state_check_constraint("invoices", column="supplier_state"),
         state_check_constraint("invoices", column="buyer_state"),
+        # Serials are consecutive *within a series*, not globally, so the old global
+        # unique on invoice_serial no longer holds. Externally numbered imports carry
+        # NULL for both and are exempt (NULLs are distinct in a unique index).
+        UniqueConstraint("invoice_series", "invoice_serial", name="uq_invoices_series_serial"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     invoice_number = Column(String, nullable=False, unique=True, index=True)
-    invoice_serial = Column(Integer, nullable=True, unique=True)
+    # The brand segment of invoice_number, e.g. "JAB" in ASC/JAB/0001. NULL on invoices
+    # issued before per-brand series existed, and on externally numbered imports.
+    invoice_series = Column(String, nullable=True)
+    invoice_serial = Column(Integer, nullable=True)
     invoice_date = Column(DateTime(timezone=True), nullable=False)
     status = Column(String, nullable=False, default=InvoiceStatus.ISSUED.value)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, unique=True)
