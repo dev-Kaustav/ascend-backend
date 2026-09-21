@@ -30,6 +30,7 @@ from app.services.finance import (
     _round_money,
 )
 from app.services.invoice import issue_invoice_for_order
+from app.services.outlet_geo import DELIVERY_GPS_ACCURACY_MAX_M, record_delivery_location
 from app.services.transactions import transactional_session
 from app.core.deps import get_role_value
 # Module-qualified import (not a from-import): current_business_date is looked
@@ -579,6 +580,36 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
         _record_payment(db, db_order, payment_mode, payment_amount)
     return db_order
 
+def _record_delivery_position(db: Session, order, status: StatusUpdate, current_user):
+    """Stamp where the driver was when they closed this order out.
+
+    Silent no-op when the phone gave us nothing, or gave us a fix too fuzzy to tell one shop
+    from its neighbour. The status transition is the business fact and must never fail because
+    of a weak GPS signal — the outlet-finder can afford to push back and ask the driver to step
+    outside, because there the location *is* the point. Here it is evidence alongside the real
+    event, so a missing fix costs us a row we never had rather than a delivery we cannot close.
+
+    Shares `record_delivery_location` with the outlet-finder so both flows apply one drift rule.
+    `outer_limit_overridden` is False because nothing here asked the driver to confirm a distant
+    reading: past the outer limit the retailer's pin is left exactly as it was.
+    """
+    if status.latitude is None or status.longitude is None:
+        return
+    if status.accuracy_m is not None and status.accuracy_m > DELIVERY_GPS_ACCURACY_MAX_M:
+        return
+    retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
+    if not retailer:
+        return
+    record_delivery_location(
+        db,
+        retailer,
+        user_id=current_user.id,
+        latitude=status.latitude,
+        longitude=status.longitude,
+        accuracy_m=status.accuracy_m,
+    )
+
+
 def update_order_status(db: Session, order_id: int, status: StatusUpdate, current_user):
     # ORD-03: lock this row before reading order.status. Two concurrent callers must not
     # both pass the legality check below against the same stale status — the loser has to
@@ -640,6 +671,7 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
         issue_invoice_for_order(db, order)
     elif next_status == OrderStatus.DELIVERED:
         order.status = OrderStatus.DELIVERED
+        _record_delivery_position(db, order, status, current_user)
         if status.payment_status:
             try:
                 requested_payment_status = PaymentStatus(status.payment_status)

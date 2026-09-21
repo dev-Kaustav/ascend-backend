@@ -146,6 +146,12 @@ class StatusUpdate(BaseModel):
     panel_status: Optional[str] = None
     issue_category: Optional[str] = None
     description: Optional[str] = None
+    # Where the driver stood when they marked it delivered. Only read on the DELIVERED
+    # transition, and optional even there: a phone with location off must still be able to
+    # close out the day's orders, so a missing fix is recorded as a missing fix, not an error.
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy_m: Optional[float] = None
 
 class InvoiceView(BaseModel):
     model_config = ConfigDict(from_attributes=True)

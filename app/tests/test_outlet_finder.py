@@ -5,6 +5,7 @@ from app.models import Employee, Retailer, User
 from app.models.enums import EmployeeRole
 from app.models.outlet_delivery import OutletDelivery
 from app.routers import outlet_finder
+from app.services import outlet_geo
 
 
 BASE_LATITUDE = 28.46
@@ -118,7 +119,7 @@ def test_lookup_partitions_ids_deduplicates_and_validates_input(client, db):
 
 
 def test_haversine_matches_independent_equatorial_distance():
-    assert outlet_finder._haversine_m(0.0, 0.0, 1.0, 0.0) == pytest.approx(
+    assert outlet_geo.haversine_m(0.0, 0.0, 1.0, 0.0) == pytest.approx(
         111_194.9,
         abs=0.1,
     )
@@ -207,7 +208,7 @@ def test_driver_inside_threshold_leaves_coordinates_and_writes_audit_row(client,
     user = db.query(User).filter(User.email == "near-driver@example.com").one()
     retailer = _retailer(db, "NEAR")
     driver_latitude = BASE_LATITUDE + 0.0005
-    expected_distance = outlet_finder._haversine_m(
+    expected_distance = outlet_geo.haversine_m(
         BASE_LATITUDE,
         BASE_LONGITUDE,
         driver_latitude,
@@ -248,7 +249,7 @@ def test_driver_inside_outer_limit_relocates_outlet_and_preserves_prior_position
     )
     retailer = _retailer(db, "CORRECT")
     driver_latitude = BASE_LATITUDE + 0.01
-    expected_distance = outlet_finder._haversine_m(
+    expected_distance = outlet_geo.haversine_m(
         BASE_LATITUDE,
         BASE_LONGITUDE,
         driver_latitude,
@@ -285,7 +286,7 @@ def test_delivery_beyond_outer_limit_is_refused_without_mutating_state(client, d
     )
     retailer = _retailer(db, "FAR")
     driver_latitude = BASE_LATITUDE + 0.1
-    expected_distance = outlet_finder._haversine_m(
+    expected_distance = outlet_geo.haversine_m(
         BASE_LATITUDE,
         BASE_LONGITUDE,
         driver_latitude,
@@ -330,7 +331,7 @@ def test_confirmed_outer_limit_override_also_relocates_the_outlet_todo_rpt_08(cl
     user = db.query(User).filter(User.email == "override-driver@example.com").one()
     retailer = _retailer(db, "OVERRIDE")
     driver_latitude = BASE_LATITUDE + 0.1
-    expected_distance = outlet_finder._haversine_m(
+    expected_distance = outlet_geo.haversine_m(
         BASE_LATITUDE,
         BASE_LONGITUDE,
         driver_latitude,

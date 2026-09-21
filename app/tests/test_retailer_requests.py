@@ -163,3 +163,51 @@ def test_salesman_without_employee_record_cannot_file(client, db):
     headers = {"Authorization": f"Bearer {create_access_token({'user_id': user.id, 'role': 'SALESMAN'})}"}
 
     assert _submit(client, headers).status_code == 403
+
+
+def test_coordinates_captured_at_the_shop_door_survive_approval(client, db):
+    """The salesman is the only person who will ever be standing at the new shop. If the
+    coordinates they captured there did not reach the retailer row, someone would have to
+    drive back out to recover them."""
+    _, headers = _salesman(db, "Ravi")
+    admin_headers = _admin(db)
+    request_id = _submit(
+        client, headers, name="Pinned Store", latitude=12.9716, longitude=77.5946
+    ).json()["id"]
+
+    assert db.get(RetailerRequest, request_id).latitude == 12.9716
+
+    client.post(f"/retailer-requests/{request_id}/approve", json={}, headers=admin_headers)
+
+    retailer = db.query(Retailer).filter(Retailer.name == "Pinned Store").one()
+    assert (retailer.latitude, retailer.longitude) == (12.9716, 77.5946)
+
+
+def test_a_request_without_coordinates_is_still_a_valid_request(client, db):
+    """Location permission denied, or filed from a desk. The outlet-finder backfills a missing
+    pin on the first delivery, so this is a state the system already knows how to leave."""
+    _, headers = _salesman(db, "Ravi")
+    admin_headers = _admin(db)
+    request_id = _submit(client, headers, name="Unpinned Store").json()["id"]
+
+    response = client.post(f"/retailer-requests/{request_id}/approve", json={}, headers=admin_headers)
+
+    assert response.status_code == 200
+    retailer = db.query(Retailer).filter(Retailer.name == "Unpinned Store").one()
+    assert retailer.latitude is None and retailer.longitude is None
+
+
+def test_a_salesman_can_correct_coordinates_while_the_request_is_pending(client, db):
+    """They walked in before the fix settled and want to redo it from the doorway."""
+    _, headers = _salesman(db, "Ravi")
+    request_id = _submit(client, headers, latitude=12.0, longitude=77.0).json()["id"]
+
+    response = client.patch(
+        f"/retailer-requests/{request_id}",
+        json={"latitude": 12.9716, "longitude": 77.5946},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["latitude"] == 12.9716
+    assert db.get(RetailerRequest, request_id).longitude == 77.5946

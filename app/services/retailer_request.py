@@ -29,6 +29,10 @@ REQUEST_FIELDS = (
     "state",
     "pincode",
     "gst_number",
+    # Carried onto the Retailer on approve, so the spot the salesman stood on becomes the
+    # outlet's location without anyone going back for it.
+    "latitude",
+    "longitude",
 )
 
 

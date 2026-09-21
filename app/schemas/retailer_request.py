@@ -20,6 +20,9 @@ class RetailerRequestCreate(RetailerCreate):
     state: Optional[str] = None
     pincode: Optional[int] = None
     gst_number: Optional[str] = None
+    # Inherited from RetailerCreate, restated here only for symmetry with the fields above.
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class RetailerRequestUpdate(RetailerRequestCreate):
@@ -46,6 +49,8 @@ class RetailerRequestResponse(BaseModel):
     state: Optional[str] = None
     pincode: Optional[int] = None
     gst_number: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     review_note: Optional[str] = None
     reviewed_at: Optional[datetime] = None
     created_retailer_id: Optional[int] = None

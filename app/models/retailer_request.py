@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.sql import func
 
 from app.db.base import Base
@@ -31,6 +31,10 @@ class RetailerRequest(Base):
     state = Column(String, nullable=True)
     pincode = Column(Integer, nullable=True)
     gst_number = Column(String, nullable=True)
+    # Captured on the salesman's phone at the shop door. Nullable because a request filed
+    # from a desk, or by someone who declined the location prompt, is still a valid request.
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
 
     reviewed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
