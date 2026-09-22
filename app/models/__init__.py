@@ -25,3 +25,4 @@ from .company_profile import CompanyProfile
 from .outlet_delivery import OutletDelivery
 from .outlet_assignment import OutletAssignment, OutletAssignmentItem
 from .retailer_request import RetailerRequest
+from .landing_lead import LandingLead
