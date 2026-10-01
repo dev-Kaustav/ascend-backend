@@ -237,3 +237,94 @@ def test_sku_units_per_pack_must_be_positive(client, db):
 def test_sku_has_no_description_column():
     """D-34: no description / short-description column is added to skus."""
     assert not any("descr" in c.name for c in SKU.__table__.columns)
+
+
+# ---------------------------------------------------------------------------
+# Task 2 - category management
+# ---------------------------------------------------------------------------
+
+def test_categories_list_orders_by_sort_order_then_id(client, db):
+    headers = _admin(db)
+    late = _category(db, "Zeta", sort_order=5)
+    tie_a = _category(db, "Alpha", sort_order=1)
+    tie_b = _category(db, "Beta", sort_order=1)
+    first = _category(db, "Omega", sort_order=0)
+    for _ in range(2):
+        ids = [c["id"] for c in client.get("/admin/categories", headers=headers).json()]
+        assert ids == [first.id, tie_a.id, tie_b.id, late.id]
+
+
+def test_category_rename_reorder_and_icon(client, db):
+    headers = _admin(db)
+    cat = _category(db, "Namkeen")
+    resp = client.patch(f"/admin/categories/{cat.id}", json={"name": "Namkeen & Bhujia"}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Namkeen & Bhujia"
+
+    resp = client.patch(f"/admin/categories/{cat.id}", json={"sort_order": 5}, headers=headers)
+    assert resp.json()["sort_order"] == 5
+    assert resp.json()["name"] == "Namkeen & Bhujia"
+
+    resp = client.patch(f"/admin/categories/{cat.id}", json={"icon_url": "https://x.y/i.png"}, headers=headers)
+    assert resp.json()["icon_url"] == "https://x.y/i.png"
+
+    resp = client.patch(f"/admin/categories/{cat.id}", json={"icon_url": None}, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["icon_url"] is None
+
+
+@pytest.mark.parametrize("bad", ["javascript:alert(1)", "http://x.y/i.png", "data:image/png;base64,xx"])
+def test_category_icon_url_rejects_non_https(client, db, bad):
+    headers = _admin(db)
+    cat = _category(db, "Namkeen")
+    assert client.patch(f"/admin/categories/{cat.id}", json={"icon_url": bad}, headers=headers).status_code == 422
+    assert client.post("/admin/categories", json={"name": "Other", "icon_url": bad}, headers=headers).status_code == 422
+
+
+def test_category_explicit_null_name_is_rejected(client, db):
+    headers = _admin(db)
+    cat = _category(db, "Namkeen")
+    assert client.patch(f"/admin/categories/{cat.id}", json={"name": None}, headers=headers).status_code == 422
+    assert client.patch(f"/admin/categories/{cat.id}", json={"name": "   "}, headers=headers).status_code == 422
+
+
+def test_category_create_rejects_case_and_space_variant(client, db):
+    headers = _admin(db)
+    _category(db, "Roasted Nuts & Seeds")
+    resp = client.post("/admin/categories", json={"name": " roasted nuts & seeds "}, headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Category already exists"
+
+
+def test_category_rename_rejects_case_and_space_variant(client, db):
+    headers = _admin(db)
+    _category(db, "Roasted Nuts & Seeds")
+    other = _category(db, "Namkeen")
+    resp = client.patch(f"/admin/categories/{other.id}", json={"name": " roasted nuts & seeds "}, headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Category already exists"
+
+
+def test_category_rename_to_own_name_succeeds(client, db):
+    headers = _admin(db)
+    cat = _category(db, "Roasted Nuts & Seeds")
+    resp = client.patch(f"/admin/categories/{cat.id}", json={"name": "roasted nuts & seeds"}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "roasted nuts & seeds"
+
+
+def test_category_patch_missing_id_is_404(client, db):
+    resp = client.patch("/admin/categories/999999", json={"name": "X"}, headers=_admin(db))
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "role",
+    [EmployeeRole.SALESMAN, EmployeeRole.ACCOUNTANT, EmployeeRole.WAREHOUSE_MANAGER, EmployeeRole.RETAILER],
+)
+def test_categories_are_admin_only(client, db, role):
+    headers = _auth_header_for(db, role)
+    cat = _category(db, "Namkeen")
+    assert client.get("/admin/categories", headers=headers).status_code == 403
+    assert client.post("/admin/categories", json={"name": "New"}, headers=headers).status_code == 403
+    assert client.patch(f"/admin/categories/{cat.id}", json={"name": "New"}, headers=headers).status_code == 403
