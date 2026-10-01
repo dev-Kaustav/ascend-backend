@@ -31,6 +31,8 @@ def test_anonymous_lists_visible_products_with_mrp_and_in_stock_flag(client, db)
     warehouse = make_storefront(db)
     brand = make_brand(db)
     category = make_category(db, "Roasted Nuts & Seeds")
+    category.icon_url = "https://jabsons.com/cdn/nuts.png"
+    db.commit()
     sku = _peanut(db, warehouse, brand, category)
 
     response = client.get("/store/products")
@@ -44,7 +46,7 @@ def test_anonymous_lists_visible_products_with_mrp_and_in_stock_flag(client, db)
             "code": "PNT-TD-23g",
             "name": "Jabsons Tandoori Roasted Peanuts 23g",
             "brand": {"id": brand.id, "name": "Jabsons"},
-            "category": {"id": category.id, "name": "Roasted Nuts & Seeds", "icon_url": None},
+            "category": {"id": category.id, "name": "Roasted Nuts & Seeds", "icon_url": "https://jabsons.com/cdn/nuts.png"},
             "image_url": "https://jabsons.com/cdn/x.webp",
             "pack_size": "23 g",
             "mrp": 8.0,
