@@ -195,6 +195,34 @@ def _tax_components_for_item(item, gst_amount: Decimal) -> dict[str, Decimal]:
     return components
 
 
+def _norm(value) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _ship_to_snapshot(order, retailer) -> tuple[str | None, str | None, str | None]:
+    """(address, state, pincode) to print under Ship To, or all None when the goods go to the
+    retailer's registered address.
+
+    A store order carries the chosen address as ship_to_* columns (08-09). Only when its line1,
+    line2, state or pincode differ from the registered shop address is a separate Ship To
+    recorded (D-29); salesman orders have no snapshot and stay NULL, which renders as before.
+    """
+    if not getattr(order, "ship_to_line1", None):
+        return None, None, None
+    chosen = tuple(_norm(getattr(order, f"ship_to_{f}", None)) for f in ("line1", "line2", "state", "pincode"))
+    registered = tuple(
+        _norm(getattr(retailer, f, None)) for f in ("address_line1", "address_line2", "state", "pincode")
+    )
+    if chosen == registered:
+        return None, None, None
+    address = ", ".join(
+        part
+        for part in (_norm(getattr(order, f"ship_to_{f}", None)) for f in ("line1", "line2", "landmark", "city"))
+        if part
+    )
+    return address, order.ship_to_state, _norm(order.ship_to_pincode) or None
+
+
 def issue_invoice_for_order(
     db: Session,
     order,
@@ -230,6 +258,8 @@ def issue_invoice_for_order(
         getattr(retailer, "address_line2", None),
     ])) or None
     buyer_pincode = str(retailer.pincode) if retailer and retailer.pincode is not None else None
+
+    ship_to_address, ship_to_state, ship_to_pincode = _ship_to_snapshot(order, retailer)
 
     supplier_address = ", ".join(filter(None, [profile.address_line1, profile.address_line2])) or None
     # Goods leave the warehouse, so its state is the fallback when the profile's own
@@ -272,6 +302,9 @@ def issue_invoice_for_order(
         buyer_state=buyer_state,
         buyer_address=buyer_address,
         buyer_pincode=buyer_pincode,
+        ship_to_address=ship_to_address,
+        ship_to_state=ship_to_state,
+        ship_to_pincode=ship_to_pincode,
         taxable_value=ZERO,
         discount_amount=ZERO,
         cgst_amount=ZERO,

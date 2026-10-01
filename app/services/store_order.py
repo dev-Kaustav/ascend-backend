@@ -280,6 +280,14 @@ def get_store_order(db: Session, user, order_id: int) -> dict:
     return _detail(db, order)
 
 
+def get_store_order_for_invoice(db: Session, user, order_id: int) -> Order:
+    """The caller's own order as an ORM row (for its invoice), or StoreOrderNotFound."""
+    order = scoped_orders_query(db, user).filter(Order.id == order_id).first()
+    if order is None:
+        raise StoreOrderNotFound(order_id)
+    return order
+
+
 def list_store_orders(db: Session, user, limit: int, offset: int) -> dict:
     total = scoped_orders_query(db, user).count()
     orders = (

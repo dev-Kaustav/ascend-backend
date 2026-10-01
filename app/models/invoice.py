@@ -50,6 +50,7 @@ class Invoice(Base):
         state_check_constraint("invoices", column="place_of_supply"),
         state_check_constraint("invoices", column="supplier_state"),
         state_check_constraint("invoices", column="buyer_state"),
+        state_check_constraint("invoices", column="ship_to_state"),
         # Serials are consecutive *within a series*, not globally, so the old global
         # unique on invoice_serial no longer holds. Externally numbered imports carry
         # NULL for both and are exempt (NULLs are distinct in a unique index).
@@ -100,6 +101,13 @@ class Invoice(Base):
     buyer_state = Column(String, nullable=True)
     buyer_address = Column(String, nullable=True)
     buyer_pincode = Column(String, nullable=True)
+
+    # Ship To snapshot (D-29, 08-10). Set at issuance only, and only when the order was delivered
+    # to an address other than the retailer's registered one; NULL everywhere else (salesman
+    # orders, every invoice issued before this existed), which renders exactly as it always did.
+    ship_to_address = Column(String, nullable=True)
+    ship_to_state = Column(String, nullable=True)
+    ship_to_pincode = Column(String, nullable=True)
 
     # Money totals — NUMERIC(12,2), Decimal-native, ROUND_HALF_UP via finance._round_money.
     taxable_value = Column(Numeric(12, 2), nullable=False)

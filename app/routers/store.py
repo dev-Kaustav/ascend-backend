@@ -1,7 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.store_deps import get_optional_retailer, get_store_retailer, get_store_user
@@ -24,6 +24,7 @@ from app.schemas.store import (
     StoreShopIn,
 )
 from app.services import retailer_onboarding, store_catalogue, store_order
+from app.services.invoice_pdf import regenerate_invoice_pdf
 from app.services.order import RetailerAccessError
 
 router = APIRouter()
@@ -209,3 +210,16 @@ def get_order(order_id: int, user=Depends(get_store_retailer), db: Session = Dep
         return store_order.get_store_order(db, user, order_id)
     except store_order.StoreOrderNotFound:
         raise HTTPException(status_code=404, detail="Order not found")
+
+
+@router.get("/orders/{order_id}/invoice.pdf")
+def get_order_invoice_pdf(order_id: int, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+    try:
+        order = store_order.get_store_order_for_invoice(db, user, order_id)
+    except store_order.StoreOrderNotFound:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.invoice is None:
+        raise HTTPException(status_code=404, detail="No invoice yet")
+    output, filename = regenerate_invoice_pdf(db, order.invoice)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(output, media_type="application/pdf", headers=headers)

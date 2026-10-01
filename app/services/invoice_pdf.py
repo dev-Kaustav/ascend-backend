@@ -147,7 +147,20 @@ def _build_address_table(invoice: Invoice):
             lines.append(_p(part, STYLE_SMALL))
         return lines
 
-    data = [[_addr_block("Bill To:"), _addr_block("Ship To:")]]
+    def _ship_to_block():
+        if invoice.ship_to_address is None:
+            return _addr_block("Ship To:")
+        # A delivery address other than the registered one (D-29): same name, the chosen
+        # address, no GSTIN line (the GSTIN belongs to the Bill To party's registration).
+        lines = [_p("<b>Ship To:</b>", STYLE_LABEL), _p(f"<b>{buyer_name}</b>", STYLE_NORMAL_BOLD)]
+        for part in filter(None, [
+            invoice.ship_to_address,
+            ", ".join(filter(None, [invoice.ship_to_state, invoice.ship_to_pincode])),
+        ]):
+            lines.append(_p(part, STYLE_SMALL))
+        return lines
+
+    data = [[_addr_block("Bill To:"), _ship_to_block()]]
     tbl = Table(data, colWidths=[content_width * 0.5, content_width * 0.5])
     tbl.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.5, colors.Color(0.7, 0.7, 0.7)),
