@@ -61,9 +61,10 @@ def _money(value) -> float:
     return float(_round_money(value))
 
 
-def _product_dict(sku: SKU, brand: Brand, category: Category, available: int) -> dict:
-    # Exactly the anonymous allowlist. Add keys here only after adding them to StoreProduct.
-    return {
+def _product_dict(sku: SKU, brand: Brand, category: Category, available: int, viewer=None) -> dict:
+    # Exactly the anonymous allowlist, plus two retailer-only keys when a retailer is viewing.
+    # Add keys here only after adding them to StoreProduct.
+    product = {
         "id": sku.id,
         "code": sku.code,
         "name": sku.name,
@@ -74,6 +75,12 @@ def _product_dict(sku: SKU, brand: Brand, category: Category, available: int) ->
         "mrp": _money(sku.mrp),
         "in_stock": available > 0,
     }
+    if viewer is not None:
+        # D-10: only a signed-in retailer sees its price and the "+" cap. Anonymous viewers
+        # get the in_stock boolean and never the count (D-08).
+        product["trade_price"] = _money(sku.amount)
+        product["max_orderable"] = min(max(available, 0), MAX_LINE_QUANTITY)
+    return product
 
 
 def list_store_categories(db: Session) -> list[dict]:
@@ -146,7 +153,7 @@ def list_store_products(
     rows.sort(key=lambda row: (available.get(row[0].id, 0) <= 0, (row[0].name or "").lower(), row[0].id))
     total = len(rows)
     page = rows[offset : offset + limit]
-    items = [_product_dict(sku, brand, category, available.get(sku.id, 0)) for sku, brand, category in page]
+    items = [_product_dict(sku, brand, category, available.get(sku.id, 0), viewer) for sku, brand, category in page]
     return items, total
 
 
@@ -156,4 +163,4 @@ def get_store_product(db: Session, viewer, product_id: int) -> dict:
         raise StoreProductNotFound(product_id)
     sku, brand, category = row
     available = storefront_availability(db, [sku.id])
-    return _product_dict(sku, brand, category, available.get(sku.id, 0))
+    return _product_dict(sku, brand, category, available.get(sku.id, 0), viewer)
