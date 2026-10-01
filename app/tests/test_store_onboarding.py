@@ -365,3 +365,34 @@ def test_minimal_body_succeeds_on_the_confirm_path_too(client, db):
     )
     assert response.status_code == 200
     assert response.json()["onboarding"] == "ready"
+
+
+@pytest.mark.parametrize("body_extra", [{}, {"gst_number": None}, {"gst_number": ""}])
+def test_confirm_with_an_omitted_gstin_keeps_the_existing_one(client, db, body_extra):
+    """WR-04: the shared Retailer record keeps its GSTIN when the client does not send one."""
+    retailer = _salesman_shop(db)  # carries 06ABCDE1234F1Z5
+    retailer_id = retailer.id
+    user = _unconfirmed_user(db, retailer)
+    response = client.put(
+        "/store/me/shop",
+        json={"shop_name": "Gupta Mega Mart", "address": ADDRESS, **body_extra},
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["onboarding"] == "ready"
+    db.expire_all()
+    assert db.get(Retailer, retailer_id).gst_number == "06ABCDE1234F1Z5"
+
+
+def test_confirm_with_an_explicit_gstin_still_updates_it(client, db):
+    retailer = _salesman_shop(db)
+    retailer_id = retailer.id
+    user = _unconfirmed_user(db, retailer)
+    response = client.put(
+        "/store/me/shop",
+        json={"shop_name": "Gupta Mega Mart", "gst_number": "07ABCDE1234F1Z5", "address": ADDRESS},
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    assert db.get(Retailer, retailer_id).gst_number == "07ABCDE1234F1Z5"

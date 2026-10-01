@@ -176,7 +176,10 @@ def complete_shop(db: Session, user: User, payload) -> User:
         address = payload.address
         retailer = db.get(Retailer, locked.retailer_id)
         retailer.name = payload.shop_name
-        retailer.gst_number = payload.gst_number
+        # An omitted GSTIN leaves the existing one alone: the record is shared with salesman
+        # invoicing, and clearing it would silently flip future invoices from B2B to B2C.
+        if payload.gst_number is not None:
+            retailer.gst_number = payload.gst_number
         _apply_address(retailer, address)
         has_saved = (
             db.query(func.count(RetailerAddress.id))
