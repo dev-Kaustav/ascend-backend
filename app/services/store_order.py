@@ -6,6 +6,7 @@ and the order goes through the same create_outgoing_order every ops order uses, 
 tax rows and the audit trail are not forked. Responses are built from dedicated allowlist dicts,
 never from _serialize_order (PORT-06).
 """
+from decimal import Decimal
 from types import SimpleNamespace
 
 from sqlalchemy.orm import Session, selectinload
@@ -14,9 +15,11 @@ from app.models import Order, OrderItem, Retailer, SKU, Warehouse
 from app.schemas.order import OrderCreate, OrderItemCreate
 from app.services import retailer_onboarding
 from app.services.finance import (
+    ZERO,
     _round_money,
     calculate_order_item_totals,
     calculate_order_totals,
+    compute_delivery_charge,
 )
 from app.services.order import (
     InsufficientStockError,
@@ -115,6 +118,17 @@ def _open_warehouse(db: Session) -> Warehouse:
     if warehouse is None:
         raise StoreClosed()
     return warehouse
+
+
+def _delivery_charge(db: Session, lines: list[dict]) -> Decimal:
+    """The server-computed delivery charge for a priced cart (D-07). The cart value is the sum of
+    the GST-inclusive line totals; the rule and rate come only from store_settings."""
+    settings = get_store_settings(db)
+    cart_value = sum(
+        (_round_money(max(line["quantity"] * line["unit_price"] - line["discount"], ZERO)) for line in lines),
+        ZERO,
+    )
+    return compute_delivery_charge(cart_value, settings.min_order_value, settings.delivery_charge_percent)
 
 
 def _orderable_cap(available: dict[int, int], sku_id: int) -> int:
@@ -222,7 +236,9 @@ def place_store_order(db: Session, user, payload) -> Order:
         "ship_to_longitude": address.longitude,
     }
     try:
-        return create_outgoing_order(db, order_create, user, ship_to=ship_to)
+        return create_outgoing_order(
+            db, order_create, user, ship_to=ship_to, delivery_charge=_delivery_charge(db, lines)
+        )
     except InsufficientStockError:
         # create_outgoing_order already rolled back; availability is re-read, the text is dropped.
         raise _stock_conflict(merged, storefront_availability(db, list(merged)), only_short=False)

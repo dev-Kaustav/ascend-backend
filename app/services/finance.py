@@ -16,6 +16,22 @@ def _round_money(value) -> Decimal:
     return d.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
+def _as_decimal(value) -> Decimal:
+    if value is None:
+        return ZERO
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def inclusive_tax_amount(inclusive_value, total_rate) -> Decimal:
+    """GST on a GST-inclusive amount at `total_rate` percent.
+
+    The single site of the formula (D-33): order item lines and the delivery charge both call it,
+    so a chartered-accountant correction (STATE.md flags whether this should back-compute the tax
+    out of an inclusive value) changes one function.
+    """
+    return _round_money(_as_decimal(inclusive_value) * (_as_decimal(total_rate) / 100))
+
+
 def _order_item_taxable_value(item) -> Decimal:
     discount_amount = item.discount_amount or ZERO
     inclusive_value = max(item.quantity * item.unit_price - discount_amount, ZERO)
@@ -25,7 +41,7 @@ def _order_item_taxable_value(item) -> Decimal:
 def _order_item_tax_amount(item) -> Decimal:
     inclusive_value = max(item.quantity * item.unit_price - (item.discount_amount or ZERO), ZERO)
     total_rate = sum((tax.rate for tax in item.taxes), ZERO)
-    return _round_money(inclusive_value * (total_rate / 100))
+    return inclusive_tax_amount(inclusive_value, total_rate)
 
 
 def calculate_order_item_totals(item) -> dict:
@@ -39,6 +55,33 @@ def calculate_order_item_totals(item) -> dict:
     }
 
 
+def compute_delivery_charge(cart_value, min_order_value, percent) -> Decimal:
+    """The GST-inclusive delivery charge for a cart (D-04, STORE-11): `percent` of the cart value,
+    rounded half-up to 2 dp, when the cart is strictly below a positive minimum; otherwise 0.
+    A minimum of 0 never charges."""
+    cart_value = _as_decimal(cart_value)
+    min_order_value = _as_decimal(min_order_value)
+    if min_order_value <= ZERO or cart_value >= min_order_value:
+        return _round_money(ZERO)
+    return _round_money(cart_value * _as_decimal(percent) / 100)
+
+
+def delivery_charge_totals(order) -> dict:
+    """Taxable value, GST and line total of an order's delivery charge. The charge is GST-inclusive,
+    so taxable_value + gst_amount == line_total exactly. Zeros when there is no charge, and for
+    transient objects that carry no delivery attributes."""
+    charge = _round_money(getattr(order, "delivery_charge", None))
+    if charge <= ZERO:
+        zero = _round_money(ZERO)
+        return {"taxable_value": zero, "gst_amount": zero, "line_total": zero}
+    gst_amount = inclusive_tax_amount(charge, getattr(order, "delivery_charge_gst_rate", None))
+    return {
+        "taxable_value": _round_money(charge - gst_amount),
+        "gst_amount": gst_amount,
+        "line_total": charge,
+    }
+
+
 def calculate_order_totals(order: Order) -> dict:
     taxable_value = ZERO
     gst_amount = ZERO
@@ -46,6 +89,9 @@ def calculate_order_totals(order: Order) -> dict:
         item_totals = calculate_order_item_totals(item)
         taxable_value += item_totals["taxable_value"]
         gst_amount += item_totals["gst_amount"]
+    delivery = delivery_charge_totals(order)
+    taxable_value += delivery["taxable_value"]
+    gst_amount += delivery["gst_amount"]
     taxable_value = _round_money(taxable_value)
     gst_amount = _round_money(gst_amount)
     grand_total = _round_money(taxable_value + gst_amount)

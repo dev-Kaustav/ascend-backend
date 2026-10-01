@@ -59,6 +59,9 @@ def make_storefront(db, *, state="Delhi"):
     db.commit()
     settings = get_store_settings(db)
     settings.storefront_warehouse_id = warehouse.id
+    # 08-11: no minimum-order delivery charge unless a test sets one, so the pricing and totals
+    # tests of earlier plans keep asserting the cart price alone.
+    settings.min_order_value = Decimal("0")
     db.commit()
     return warehouse
 

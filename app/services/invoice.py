@@ -9,6 +9,7 @@ into the order dispatch transition.
 import hashlib
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -16,10 +17,15 @@ from sqlalchemy.orm import Session
 from app.models import Brand, CompanyProfile, Invoice, InvoiceLine, Retailer, SKU, Warehouse
 from app.models.enums import InvoiceStatus, InvoiceType, SupplyType
 from app.models.invoice import DEFAULT_UQC
-from app.services.finance import calculate_order_item_totals, _round_money
+from app.services.finance import calculate_order_item_totals, delivery_charge_totals, _round_money
 from app.services.invoice_pdf import render_invoice_pdf
 
 ZERO = Decimal("0")
+
+# D-36: the delivery charge is a service, not a counted good, so its unit quantity code is OTH
+# (GST "others"), and it carries the HSN of the highest-rate item line. CA confirmation pending.
+DELIVERY_CHARGE_UQC = "OTH"
+DELIVERY_CHARGE_DESCRIPTION = "Delivery charge"
 
 # tax_type -> InvoiceLine column prefix. Only these three families have a component
 # column; CESS has no source anywhere in this codebase today (see _tax_components_for_item).
@@ -193,6 +199,39 @@ def _tax_components_for_item(item, gst_amount: Decimal) -> dict[str, Decimal]:
         else:
             components[f"{prefix}_amount"] = _round_money(gst_amount - allocated)
     return components
+
+
+def _line_total_rate(line) -> Decimal:
+    return sum(
+        (getattr(line, f"{prefix}_rate", None) or ZERO for prefix in ("cgst", "sgst", "igst", "cess")),
+        ZERO,
+    )
+
+
+def _delivery_charge_hsn(item_lines) -> str | None:
+    """HSN printed on the delivery line (D-36): that of the item line with the highest total GST
+    rate, the lowest line number winning a tie. Read from the already-built item-line snapshots, so
+    the invoice, its PDF and the GST export agree and never re-read the live SKU classification. A
+    nullable item HSN stays NULL."""
+    if not item_lines:
+        return None
+    chosen = min(item_lines, key=lambda line: (-_line_total_rate(line), line.line_number))
+    return chosen.hsn_code
+
+
+def _delivery_charge_components(rate: Decimal, gst_amount: Decimal, inter_state: bool) -> dict[str, Decimal]:
+    """Split the delivery GST like an item's: IGST at the full rate between states, otherwise CGST
+    rate/2 and SGST the remainder of the rate, with `_tax_components_for_item` allocating the
+    amount so the components sum to it exactly. D-35 decides inter_state."""
+    if inter_state:
+        rows = [SimpleNamespace(tax_type="IGST", rate=rate)]
+    else:
+        half = _round_money(rate / 2)
+        rows = [
+            SimpleNamespace(tax_type="CGST", rate=half),
+            SimpleNamespace(tax_type="SGST", rate=_round_money(rate - half)),
+        ]
+    return _tax_components_for_item(SimpleNamespace(taxes=rows), gst_amount)
 
 
 def _norm(value) -> str:
@@ -372,6 +411,37 @@ def issue_invoice_for_order(
         cess_total += components["cess_amount"]
         tax_total += totals["gst_amount"]
         grand_total += totals["line_total"]
+
+    # STORE-11 / D-06: the delivery charge is its own line after every item line, never merged into
+    # one. A zero charge adds nothing, so every existing invoice renders exactly as before.
+    delivery = delivery_charge_totals(order)
+    if delivery["line_total"] > ZERO:
+        components = _delivery_charge_components(
+            _round_money(order.delivery_charge_gst_rate), delivery["gst_amount"], inter_state
+        )
+        invoice.lines.append(
+            InvoiceLine(
+                line_number=len(invoice.lines) + 1,
+                sku_id=None,
+                description=DELIVERY_CHARGE_DESCRIPTION,
+                hsn_code=_delivery_charge_hsn(list(invoice.lines)),
+                quantity=1,
+                uqc=DELIVERY_CHARGE_UQC,
+                unit_rate=delivery["line_total"],
+                discount_amount=ZERO,
+                taxable_value=delivery["taxable_value"],
+                total_tax_amount=delivery["gst_amount"],
+                line_total=delivery["line_total"],
+                **components,
+            )
+        )
+        taxable_total += delivery["taxable_value"]
+        cgst_total += components["cgst_amount"]
+        sgst_total += components["sgst_amount"]
+        igst_total += components["igst_amount"]
+        cess_total += components["cess_amount"]
+        tax_total += delivery["gst_amount"]
+        grand_total += delivery["line_total"]
 
     # Rolled up from the stored lines, not re-invoked from calculate_order_totals(order)
     # — a reader adding up the printed lines gets the printed total.

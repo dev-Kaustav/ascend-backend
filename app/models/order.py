@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Float, ForeignKey, Text
+from sqlalchemy import CheckConstraint, Column, Integer, Numeric, String, DateTime, Enum, Float, ForeignKey, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -7,7 +7,10 @@ from .enums import OrderStatus, PaymentStatus, IssueCategory, state_check_constr
 
 class Order(Base):
     __tablename__ = "orders"
-    __table_args__ = (state_check_constraint("orders", column="ship_to_state"),)
+    __table_args__ = (
+        state_check_constraint("orders", column="ship_to_state"),
+        CheckConstraint("delivery_charge >= 0", name="ck_orders_delivery_charge_nonnegative"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     from_entity_type = Column(String, nullable=False)
@@ -47,6 +50,13 @@ class Order(Base):
     ship_to_pincode = Column(Integer, nullable=True)
     ship_to_latitude = Column(Float, nullable=True)
     ship_to_longitude = Column(Float, nullable=True)
+
+    # 08-11 / STORE-11: the GST-inclusive delivery charge the server added below the store's minimum
+    # cart value (0 for every salesman/admin order and every order at or above the minimum), and the
+    # GST rate it is taxed at (the highest per-item rate in the order, D-33). Both are fixed at
+    # order creation; the percentage that produced the charge is never stored here.
+    delivery_charge = Column(Numeric(12, 2), nullable=False, server_default="0", default=0)
+    delivery_charge_gst_rate = Column(Numeric(5, 2), nullable=False, server_default="0", default=0)
 
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     credit_notes = relationship("CreditNote", back_populates="order", cascade="all, delete-orphan")

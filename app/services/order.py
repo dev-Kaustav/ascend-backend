@@ -528,10 +528,19 @@ _SHIP_TO_FIELDS = (
 )
 
 
-def create_outgoing_order(db: Session, order: OrderCreate, current_user, *, ship_to: dict | None = None):
+def create_outgoing_order(
+    db: Session,
+    order: OrderCreate,
+    current_user,
+    *,
+    ship_to: dict | None = None,
+    delivery_charge=None,
+):
     """`ship_to` is the storefront's delivery-address snapshot (D-29): a dict keyed by the Order
-    ship-to column names (delivery_address_id, ship_to_label, ...). Callers that pass nothing
-    (every ops/salesman path) get an order with no snapshot, as before."""
+    ship-to column names (delivery_address_id, ship_to_label, ...). `delivery_charge` is the
+    server-computed storefront delivery charge (STORE-11); it is taxed at the highest per-item GST
+    rate among this order's lines (D-33). Callers that pass nothing (every ops/salesman path) get an
+    order with no snapshot and no charge, as before."""
     role_value = get_role_value(current_user)
     salesman_id = None
     if role_value == "SALESMAN":
@@ -583,6 +592,7 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user, *, ship
         db.add(db_order)
         db.flush()
 
+        highest_item_rate = Decimal("0")
         for item in order.items:
             sku = db.query(SKU).filter(SKU.id == item.sku_id).first()
             db_item = OrderItem(
@@ -595,6 +605,7 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user, *, ship
             db.add(db_item)
             db.flush()
 
+            item_rate = Decimal("0")
             for tax in _tax_rows_for_item(sku, item, inter_state):
                 db_tax = OrderItemTax(
                     order_item_id=db_item.id,
@@ -602,6 +613,12 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user, *, ship
                     rate=tax["rate"]
                 )
                 db.add(db_tax)
+                item_rate += tax["rate"]
+            highest_item_rate = max(highest_item_rate, item_rate)
+
+        if delivery_charge is not None and _round_money(delivery_charge) > 0:
+            db_order.delivery_charge = _round_money(delivery_charge)
+            db_order.delivery_charge_gst_rate = _round_money(highest_item_rate)
 
         db.add(OrderTrail(
             order_id=db_order.id,
