@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.services import firebase_auth
+from app.services import firebase_auth, rate_limit
 from app.services.auth import authenticate_user, create_tokens
 from app.services.firebase_auth import InvalidOtpToken, OtpVerifierUnavailable
 from app.services.retailer_onboarding import (
@@ -26,10 +26,29 @@ from app.models import Retailer, User
 
 router = APIRouter()
 
+def _too_many(exc: rate_limit.RateLimited) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="Too many failed attempts. Try again later.",
+        headers={"Retry-After": str(exc.retry_after)},
+    )
+
+
 @router.post("/login", response_model=TokenResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
+def login(request: LoginRequest, http_request: Request, db: Session = Depends(get_db)):
+    # Same normalisation as authenticate_user, so case/whitespace variants share one counter.
+    email = request.email.strip().lower()
+    ip = rate_limit.client_ip(http_request)
+    try:
+        rate_limit.check(db, "login_email", email)
+        rate_limit.check(db, "login_ip", ip)
+    except rate_limit.RateLimited as exc:
+        raise _too_many(exc)
     user = authenticate_user(db, request.email, request.password)
     if not user:
+        rate_limit.record_failure(db, "login_email", email)
+        rate_limit.record_failure(db, "login_ip", ip)
+        rate_limit.auth_logger.warning("login_failed email=%s ip=%s", rate_limit.printable(email), ip)
         raise HTTPException(status_code=400, detail="Invalid credentials")
     access_token, refresh_token = create_tokens(user)
     return {"access_token": access_token, "refresh_token": refresh_token}
