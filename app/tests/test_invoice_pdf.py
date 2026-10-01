@@ -327,3 +327,42 @@ def test_totals_printed_on_the_pdf_match_the_stored_invoice(db):
     text = _decoded_page_text(pdf_bytes.getvalue())
     grand_total_str = f"{invoice.grand_total:,.2f}".encode()
     assert grand_total_str in text
+
+
+HOSTILE = "A <B Traders & Co"
+
+
+def test_markup_characters_in_retailer_text_render_and_are_preserved():
+    """CR-02: a shop name or address with stray markup used to raise a Paragraph parse error."""
+    invoice = _bare_invoice()
+    invoice.buyer_name = HOSTILE
+    invoice.buyer_address = "<b>Unclosed & <i>nested</b></i> lane"
+    invoice.buyer_gstin = "27ABCDE1234F1Z5"
+    invoice.ship_to_address = '<img src="file:///etc/passwd"/> Dock 5 & 6'
+    invoice.ship_to_state = "<Delhi>"
+    invoice.lines[0].description = "Salt <5% & Pepper</b>"
+    company = CompanyProfile(
+        legal_name="Ascend Foods", invoice_prefix="ASC",
+        invoice_footer="Pay <now> & save",
+    )
+    invoice.supplier_legal_name = "Ascend <Foods> & Co"
+
+    data = render_invoice_pdf(invoice, company).getvalue()
+    # ReportLab splits a paragraph into word-sized Tj runs, so compare with spaces removed.
+    runs = re.findall(rb"\((.*?)\) Tj", _decoded_page_text(data))
+    text = b"".join(runs).replace(b" ", b"")
+
+    assert data.startswith(b"%PDF")
+    for fragment in (
+        HOSTILE, "Dock 5 & 6", "Salt <5% & Pepper</b>", "Pay <now> & save", "Ascend <Foods> & Co",
+    ):
+        assert fragment.replace(" ", "").encode() in text, fragment
+    # The tag-like text was printed literally, not interpreted (no image was embedded).
+    assert b"/Subtype /Image" not in data
+
+
+def test_hostile_markup_is_rendered_deterministically():
+    a, b = _bare_invoice(), _bare_invoice()
+    for inv in (a, b):
+        inv.buyer_name = HOSTILE
+    assert render_invoice_pdf(a).getvalue() == render_invoice_pdf(b).getvalue()

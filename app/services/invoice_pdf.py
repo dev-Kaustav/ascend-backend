@@ -1,5 +1,6 @@
 from decimal import Decimal
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -55,6 +56,16 @@ def _p(text, style=STYLE_NORMAL):
     return Paragraph(str(text) if text else "", style)
 
 
+def _esc(value) -> str:
+    """XML-escape a data-derived string before it goes into Paragraph markup.
+
+    Paragraph parses an XML-like mini-language, and shop names, addresses and SKU names are
+    user-controlled: a stray `<` or `&` raises a parse error (blocking dispatch), and tags such
+    as `<img src=...>` are honoured. Intentional markup (`<b>`) stays outside the escaped value.
+    """
+    return escape(str(value)) if value else ""
+
+
 def _money(value) -> str:
     # Format the Decimal directly rather than routing through float(). A float round
     # trip is exactly the pattern Phase 1 spent a whole phase removing; there is no
@@ -74,7 +85,7 @@ def _company_profile(db: Session) -> CompanyProfile:
 
 
 def _build_header_table(invoice: Invoice, company: CompanyProfile):
-    left_lines = [_p(invoice.supplier_legal_name or "Ascend Foods", STYLE_HEADER)]
+    left_lines = [_p(_esc(invoice.supplier_legal_name or "Ascend Foods"), STYLE_HEADER)]
     for line in [
         invoice.supplier_address,
         ", ".join(filter(None, [invoice.supplier_state, invoice.supplier_pincode])),
@@ -85,7 +96,7 @@ def _build_header_table(invoice: Invoice, company: CompanyProfile):
         f"E-Mail: {company.email}" if company.email else None,
     ]:
         if line:
-            left_lines.append(_p(line, STYLE_SMALL))
+            left_lines.append(_p(_esc(line), STYLE_SMALL))
 
     right = _p("TAX INVOICE", STYLE_TITLE)
     content_width = PAGE_WIDTH - 2 * MARGIN
@@ -118,7 +129,7 @@ def _build_invoice_info_table(invoice: Invoice):
     # via invoices.order_id.
     data = [
         [
-            _p(f"INVOICE NUMBER: <b>{invoice.invoice_number or '-'}</b>", STYLE_NORMAL),
+            _p(f"INVOICE NUMBER: <b>{_esc(invoice.invoice_number or '-')}</b>", STYLE_NORMAL),
             _p(f"Invoice Date: {invoice_date}", STYLE_NORMAL),
         ],
     ]
@@ -135,7 +146,7 @@ def _build_invoice_info_table(invoice: Invoice):
 
 def _build_address_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
-    buyer_name = invoice.buyer_name or "-"
+    buyer_name = _esc(invoice.buyer_name or "-")
 
     def _addr_block(heading):
         lines = [_p(f"<b>{heading}</b>", STYLE_LABEL), _p(f"<b>{buyer_name}</b>", STYLE_NORMAL_BOLD)]
@@ -144,7 +155,7 @@ def _build_address_table(invoice: Invoice):
             ", ".join(filter(None, [invoice.buyer_state, invoice.buyer_pincode])),
             f"GSTIN: {invoice.buyer_gstin}" if invoice.buyer_gstin else None,
         ]):
-            lines.append(_p(part, STYLE_SMALL))
+            lines.append(_p(_esc(part), STYLE_SMALL))
         return lines
 
     def _ship_to_block():
@@ -157,7 +168,7 @@ def _build_address_table(invoice: Invoice):
             invoice.ship_to_address,
             ", ".join(filter(None, [invoice.ship_to_state, invoice.ship_to_pincode])),
         ]):
-            lines.append(_p(part, STYLE_SMALL))
+            lines.append(_p(_esc(part), STYLE_SMALL))
         return lines
 
     data = [[_addr_block("Bill To:"), _ship_to_block()]]
@@ -228,7 +239,7 @@ def _build_items_table(invoice: Invoice):
         qty = line.quantity or 0
         row = [
             str(line.line_number),
-            _p(line.description or f"SKU {line.sku_id}", STYLE_SMALL),
+            _p(_esc(line.description or f"SKU {line.sku_id}"), STYLE_SMALL),
             line.hsn_code or "-",
             str(qty),
             _money(line.unit_rate),
@@ -363,7 +374,7 @@ def _build_payment_details_table(invoice: Invoice):
     content_width = PAGE_WIDTH - 2 * MARGIN
     left = [_p("Payment Details", STYLE_LABEL)]
     for label, value in rows:
-        left.append(_p(f"{label}: {value}", STYLE_SMALL))
+        left.append(_p(f"{label}: {_esc(value)}", STYLE_SMALL))
     if not rows:
         left.append(_p("Scan to pay", STYLE_SMALL))
 
@@ -385,8 +396,8 @@ def _build_payment_details_table(invoice: Invoice):
 
 def _build_footer_table(invoice: Invoice, company: CompanyProfile):
     content_width = PAGE_WIDTH - 2 * MARGIN
-    supplier_name = invoice.supplier_legal_name or "Ascend Foods"
-    left = _p(f"<b>{invoice.invoice_number or ''}</b> ({supplier_name})", STYLE_FOOTER_BOLD)
+    supplier_name = _esc(invoice.supplier_legal_name or "Ascend Foods")
+    left = _p(f"<b>{_esc(invoice.invoice_number)}</b> ({supplier_name})", STYLE_FOOTER_BOLD)
     right_lines = [
         _p(supplier_name, STYLE_FOOTER),
         Spacer(1, 20),
@@ -476,7 +487,7 @@ def render_invoice_pdf(invoice: Invoice, company: CompanyProfile | None = None) 
 
     footer_text = company.invoice_footer or "This is a computer generated invoice."
     elements.append(Spacer(1, 2 * mm))
-    elements.append(_p(footer_text, STYLE_FOOTER))
+    elements.append(_p(_esc(footer_text), STYLE_FOOTER))
 
     doc.build(elements)
     buf.seek(0)
