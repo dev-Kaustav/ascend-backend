@@ -130,3 +130,40 @@ def stocked_sku(
         )
         db.commit()
     return sku
+
+
+def ready_retailer(db, *, warehouse_state="Delhi", assigned_salesman_id=None):
+    """A store-ready retailer: confirmed shop, RETAILER user and one saved delivery address.
+
+    warehouse_state is the state of both the registered shop and the saved address, so pass the
+    storefront warehouse's state for an intra-state order (CGST + SGST) and a different one for
+    an inter-state order (IGST). Returns (user, retailer, address).
+    """
+    from app.models import RetailerAddress
+
+    n = next(_counter)
+    retailer = make_retailer(
+        db,
+        name=f"Ready Shop {n}",
+        state=warehouse_state,
+        mobile_number=9100000000 + n,
+        assigned_salesman_id=assigned_salesman_id,
+    )
+    user = make_user(
+        db, EmployeeRole.RETAILER, retailer_id=retailer.id, phone_number=9100000000 + n
+    )
+    address = RetailerAddress(
+        retailer_id=retailer.id,
+        label="Shop",
+        line1=f"{n} Market Road",
+        line2="Block B",
+        landmark="Near the temple",
+        city="Delhi",
+        state=warehouse_state,
+        pincode=110001,
+        latitude=28.6139,
+        longitude=77.209,
+    )
+    db.add(address)
+    db.commit()
+    return user, retailer, address
