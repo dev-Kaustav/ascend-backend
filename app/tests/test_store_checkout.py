@@ -413,3 +413,193 @@ def test_another_retailers_order_and_a_missing_id_are_404_never_403(client, db):
     missing = client.get("/store/orders/999999", headers=auth_headers(stranger))
     assert foreign.status_code == 404 and missing.status_code == 404
     assert foreign.json() == missing.json() == {"detail": "Order not found"}
+
+
+# --- Task 3: ship-to stays a snapshot ----------------------------------------------------------------
+
+from app.models import Retailer, RetailerAddress, User  # noqa: E402
+from app.models.outlet_delivery import OutletDelivery  # noqa: E402
+from app.schemas.order import StatusUpdate  # noqa: E402
+from app.services.order import update_order_status  # noqa: E402
+
+SHOP_LAT, SHOP_LNG = 12.971600, 77.594600
+NEARBY_LAT, NEARBY_LNG = 12.971870, 77.594600  # ~30 m: inside the 75 m threshold
+MOVED_LAT, MOVED_LNG = 12.985000, 77.594600  # ~1.5 km: a real correction for an ordinary order
+
+SHIP_TO_KEYS = (
+    "delivery_address_id",
+    "ship_to_label",
+    "ship_to_line1",
+    "ship_to_line2",
+    "ship_to_landmark",
+    "ship_to_city",
+    "ship_to_state",
+    "ship_to_pincode",
+    "ship_to_latitude",
+    "ship_to_longitude",
+)
+
+
+def test_ops_order_detail_shows_where_a_store_order_goes_and_nulls_for_salesman_orders(client, db):
+    _, _, _, sku = _store(db)
+    user, retailer, address = ready_retailer(db)
+    admin = make_user(db, EmployeeRole.ADMIN)
+    order_id = client.post("/store/orders", json=_order_body(sku, address), headers=auth_headers(user)).json()["id"]
+
+    detail = client.get(f"/orders/{order_id}", headers=auth_headers(admin))
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["delivery_address_id"] == address.id
+    assert body["ship_to_label"] == address.label
+    assert body["ship_to_line1"] == address.line1
+    assert body["ship_to_line2"] == address.line2
+    assert body["ship_to_landmark"] == address.landmark
+    assert body["ship_to_city"] == address.city
+    assert body["ship_to_state"] == address.state
+    assert body["ship_to_pincode"] == address.pincode
+    assert body["ship_to_latitude"] == address.latitude
+    assert body["ship_to_longitude"] == address.longitude
+
+    salesman_order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=db.query(Order).get(order_id).from_entity_id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=1, unit_price=22.5, discount_amount=4.5)],
+        ),
+        admin,
+    )
+    plain = client.get(f"/orders/{salesman_order.id}", headers=auth_headers(admin)).json()
+    for key in SHIP_TO_KEYS:
+        assert plain[key] is None, key
+
+
+def test_editing_or_deleting_the_saved_address_never_rewrites_an_existing_order(client, db):
+    _, _, _, sku = _store(db)
+    user, retailer, address = ready_retailer(db)
+    headers = auth_headers(user)
+    order_id = client.post("/store/orders", json=_order_body(sku, address), headers=headers).json()["id"]
+    original_line1 = address.line1
+    original = {key: getattr(db.query(Order).get(order_id), key) for key in SHIP_TO_KEYS}
+
+    edited = client.patch(
+        f"/store/me/addresses/{address.id}",
+        json={"line1": "Somewhere else entirely", "latitude": 10.0, "longitude": 20.0},
+        headers=headers,
+    )
+    assert edited.status_code == 200
+    db.expire_all()
+    order = db.query(Order).get(order_id)
+    assert order.ship_to_line1 == original_line1
+    assert {key: getattr(order, key) for key in SHIP_TO_KEYS} == original
+    assert client.get(f"/store/orders/{order_id}", headers=headers).json()["ship_to"]["line1"] == original_line1
+
+    # A second address lets the first be deleted (a shop must keep one).
+    db.add(RetailerAddress(retailer_id=retailer.id, line1="Second", state="Delhi", latitude=28.5, longitude=77.1))
+    db.commit()
+    assert client.delete(f"/store/me/addresses/{address.id}", headers=headers).status_code == 204
+    db.expire_all()
+    order = db.query(Order).get(order_id)
+    assert order.delivery_address_id is None
+    expected = {**original, "delivery_address_id": None}
+    assert {key: getattr(order, key) for key in SHIP_TO_KEYS} == expected
+    assert client.get(f"/store/orders/{order_id}", headers=headers).json()["ship_to"]["line1"] == original_line1
+
+
+def _drive_to_delivered(db, order, *, lat, lng, accuracy_m=10.0):
+    admin = make_user(db, EmployeeRole.ADMIN)
+    driver = Employee(name=f"Driver {order.id}", email=f"driver-{order.id}@ascend.com", role=EmployeeRole.DRIVER)
+    db.add(driver)
+    db.commit()
+    driver_user = User(
+        email=f"driver-user-{order.id}@ascend.com",
+        password_hash="x",
+        role=EmployeeRole.DRIVER,
+        employee_id=driver.id,
+    )
+    db.add(driver_user)
+    db.commit()
+    update_order_status(
+        db, order.id, StatusUpdate(status="READY_TO_SHIP", delivery_driver_id=driver.id), current_user=admin
+    )
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=driver_user)
+    update_order_status(
+        db,
+        order.id,
+        StatusUpdate(status="DELIVERED", latitude=lat, longitude=lng, accuracy_m=accuracy_m),
+        current_user=driver_user,
+    )
+    db.refresh(order)
+
+
+def test_delivering_a_store_order_records_evidence_but_never_moves_the_shop_pin(client, db):
+    _, _, _, sku = _store(db)
+    user, retailer, address = ready_retailer(db)
+    retailer.latitude, retailer.longitude = SHOP_LAT, SHOP_LNG
+    db.commit()
+    headers = auth_headers(user)
+
+    near_id = client.post("/store/orders", json=_order_body(sku, address, 1), headers=headers).json()["id"]
+    far_id = client.post("/store/orders", json=_order_body(sku, address, 1), headers=headers).json()["id"]
+
+    _drive_to_delivered(db, db.query(Order).get(near_id), lat=NEARBY_LAT, lng=NEARBY_LNG)
+    # 1.5 km away is a correction for an ordinary order; for a store order it is only evidence.
+    _drive_to_delivered(db, db.query(Order).get(far_id), lat=MOVED_LAT, lng=MOVED_LNG)
+
+    db.refresh(retailer)
+    assert (retailer.latitude, retailer.longitude) == (SHOP_LAT, SHOP_LNG)
+    rows = db.query(OutletDelivery).filter(OutletDelivery.retailer_id == retailer.id).order_by(OutletDelivery.id).all()
+    assert len(rows) == 2
+    assert [r.retailer_updated for r in rows] == [False, False]
+    assert (rows[1].driver_latitude, rows[1].driver_longitude) == (MOVED_LAT, MOVED_LNG)
+
+
+def test_delivering_a_salesman_order_still_moves_the_pin_as_before(client, db):
+    _, _, _, sku = _store(db)
+    _, retailer, _ = ready_retailer(db)
+    retailer.latitude, retailer.longitude = SHOP_LAT, SHOP_LNG
+    admin = make_user(db, EmployeeRole.ADMIN)
+    db.commit()
+    order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=db.query(SKUBatch).first().warehouse_id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=1, unit_price=22.5, discount_amount=4.5)],
+        ),
+        admin,
+    )
+    _drive_to_delivered(db, order, lat=MOVED_LAT, lng=MOVED_LNG)
+
+    db.refresh(retailer)
+    assert (retailer.latitude, retailer.longitude) == (MOVED_LAT, MOVED_LNG)
+    (row,) = db.query(OutletDelivery).filter(OutletDelivery.retailer_id == retailer.id).all()
+    assert row.retailer_updated is True
+
+
+def test_a_brand_new_number_can_order_straight_after_finishing_shop_setup(client, db):
+    _, _, _, sku = _store(db)
+    user = make_user(db, EmployeeRole.RETAILER, phone_number=9876543211)
+    headers = auth_headers(user)
+
+    shop = client.put(
+        "/store/me/shop",
+        json={
+            "shop_name": "Fresh Kirana",
+            "address": {"line1": "Shop 1, Lane 2", "state": "Delhi", "latitude": 28.61, "longitude": 77.2},
+        },
+        headers=headers,
+    )
+    assert shop.status_code == 200, shop.text
+    address_id = shop.json()["addresses"][0]["id"]
+
+    placed = client.post(
+        "/store/orders",
+        json={"items": [{"sku_id": sku.id, "quantity": 2}], "address_id": address_id},
+        headers=headers,
+    )
+    assert placed.status_code == 201, placed.text
+    assert placed.json()["ship_to"]["line1"] == "Shop 1, Lane 2"
+    order = db.query(Order).one()
+    assert order.salesman_id is None
+    assert order.to_entity_id == db.query(Retailer).one().id
