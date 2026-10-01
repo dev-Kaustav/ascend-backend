@@ -72,7 +72,10 @@ from app.schemas.admin import (
     CategoryCreate,
     CategoryUpdate,
     CategoryResponse,
+    StoreSettingsUpdate,
+    StoreSettingsResponse,
 )
+from app.services.store_settings import get_store_settings, update_store_settings
 from app.schemas.order import OrderListPage
 from app.core.deps import require_admin, require_roles, require_warehouse_manager
 from app.models.beat import Beat
@@ -317,6 +320,21 @@ def update_company_profile_endpoint(
     current_user = Depends(require_admin),
 ):
     return _company_profile_view(update_company_profile(db, payload))
+
+@router.get("/store-settings", response_model=StoreSettingsResponse)
+def get_store_settings_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    return get_store_settings(db)
+
+@router.patch("/store-settings", response_model=StoreSettingsResponse)
+def update_store_settings_endpoint(
+    payload: StoreSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return update_store_settings(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/orders/status-summary")
 def get_order_status_summary_endpoint(

@@ -42,8 +42,9 @@ def test_defaults_constants():
 
 
 def test_get_creates_row_with_defaults(client, db):
+    headers = _admin(db)
     assert db.query(StoreSettings).count() == 0
-    resp = client.get("/admin/store-settings", headers=_admin(db))
+    resp = client.get("/admin/store-settings", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
         "min_order_value": 1000.0,
@@ -51,7 +52,7 @@ def test_get_creates_row_with_defaults(client, db):
         "storefront_warehouse_id": None,
     }
     assert db.query(StoreSettings).count() == 1
-    client.get("/admin/store-settings", headers=_admin(db))
+    client.get("/admin/store-settings", headers=headers)
     assert db.query(StoreSettings).count() == 1
 
 

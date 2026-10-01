@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional
 from datetime import datetime, date
+from decimal import Decimal
 
 from app.models.enums import INDIAN_STATES
 
@@ -369,6 +370,29 @@ class CategoryResponse(BaseModel):
     name: str
     sort_order: int
     icon_url: Optional[str] = None
+
+
+class StoreSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    # Partial: an omitted key means "leave it". An explicit null is rejected for the two money
+    # fields (they are NOT NULL); a null storefront_warehouse_id closes the store.
+    min_order_value: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    delivery_charge_percent: Optional[Decimal] = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    storefront_warehouse_id: Optional[int] = None
+
+    @field_validator("min_order_value", "delivery_charge_percent")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("This field cannot be null.")
+        return value
+
+
+class StoreSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    min_order_value: float
+    delivery_charge_percent: float
+    storefront_warehouse_id: Optional[int] = None
 
 
 class InventoryReceiptItem(BaseModel):
