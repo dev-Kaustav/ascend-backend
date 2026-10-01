@@ -192,13 +192,22 @@ def test_thirty_failed_logins_from_one_ip_block_the_next_attempt(client, staff, 
     assert _login(client, email="another@example.com", password=WRONG).status_code == 429
 
 
-def test_email_lock_does_not_depend_on_the_callers_ip(client, staff, clock, monkeypatch):
+def test_a_locked_email_ip_pair_does_not_lock_the_owner_out_from_another_ip(client, staff, clock, monkeypatch):
+    # WR-01: a third party hammering the admin's email only locks (email, their own IP).
     for _ in range(5):
         _login(client, password=WRONG)
     assert _login(client).status_code == 429
-    # The per-email cap is not IP-dependent: moving to another IP does not reset it.
     monkeypatch.setattr(rate_limit, "client_ip", lambda request: "198.51.100.7")
-    assert _login(client).status_code == 429
+    assert _login(client).status_code == 200
+
+
+def test_per_ip_cap_still_applies_to_a_second_ip_across_emails(client, staff, clock, monkeypatch):
+    monkeypatch.setattr(rate_limit, "client_ip", lambda request: "198.51.100.7")
+    for i in range(30):
+        assert _login(client, email=f"nobody{i}@example.com", password=WRONG).status_code == 400
+    res = _login(client)  # the real password, but this IP is over its ceiling
+    assert res.status_code == 429
+    assert res.headers["Retry-After"] == "900"
 
 
 def test_a_locked_email_does_not_block_a_different_email_from_another_ip(client, db, staff, clock, monkeypatch):

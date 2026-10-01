@@ -8,7 +8,7 @@ class AuthAttempt(Base):
 
     `created_at` is naive UTC written by `app.services.rate_limit`, not a server default, so
     SQLite and PostgreSQL compare the 15-minute window identically (the RPT-06 naive/aware
-    lesson). `key` is the normalised email (scope "login_email") or the client IP.
+    lesson). `key` is "<client ip>|<normalised email>" (scope "login_email") or the client IP.
     """
 
     __tablename__ = "auth_attempts"

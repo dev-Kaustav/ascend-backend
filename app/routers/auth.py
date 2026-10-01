@@ -39,14 +39,19 @@ def login(request: LoginRequest, http_request: Request, db: Session = Depends(ge
     # Same normalisation as authenticate_user, so case/whitespace variants share one counter.
     email = request.email.strip().lower()
     ip = rate_limit.client_ip(http_request)
+    # The per-account counter is keyed on (ip, email), not email alone: a third party who only
+    # knows the address must not be able to lock the real owner (e.g. the admin) out. The
+    # per-IP ceiling still bounds how many guesses any one address can make across all emails.
+    # IP goes first so the 255-char key truncation can never cut it off a very long email.
+    account_key = f"{ip}|{email}"
     try:
-        rate_limit.check(db, "login_email", email)
+        rate_limit.check(db, "login_email", account_key)
         rate_limit.check(db, "login_ip", ip)
     except rate_limit.RateLimited as exc:
         raise _too_many(exc)
     user = authenticate_user(db, request.email, request.password)
     if not user:
-        rate_limit.record_failure(db, "login_email", email)
+        rate_limit.record_failure(db, "login_email", account_key)
         rate_limit.record_failure(db, "login_ip", ip)
         rate_limit.auth_logger.warning("login_failed email=%s ip=%s", rate_limit.printable(email), ip)
         raise HTTPException(status_code=400, detail="Invalid credentials")
