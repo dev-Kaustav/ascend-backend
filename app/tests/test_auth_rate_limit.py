@@ -257,3 +257,70 @@ def test_log_line_cannot_be_forged_with_newlines_in_the_email(client, staff, clo
         _login(client, email="x@example.com\nFAKE login_ok", password=WRONG)
     msg = [r for r in caplog.records if r.name == "ascend.auth"][0].getMessage()
     assert "\n" not in msg
+
+
+# --- client IP source (CR-01): only the entry nginx appended is trusted ----------------------
+
+REAL = "203.0.113.50"
+
+
+class _Req:
+    def __init__(self, xff=None, host="172.17.0.1"):
+        self.headers = {} if xff is None else {"x-forwarded-for": xff}
+        self.client = type("C", (), {"host": host})() if host else None
+
+
+def test_client_ip_is_the_last_forwarded_entry_not_a_forged_leading_one():
+    assert rate_limit.client_ip(_Req(f"1.2.3.4, {REAL}")) == REAL
+    assert rate_limit.client_ip(_Req(f"1.2.3.4, 5.6.7.8,{REAL}")) == REAL
+    assert rate_limit.client_ip(_Req(REAL)) == REAL
+
+
+def test_client_ip_falls_back_to_the_socket_peer_without_a_usable_header():
+    assert rate_limit.client_ip(_Req(None)) == "172.17.0.1"
+    assert rate_limit.client_ip(_Req("")) == "172.17.0.1"
+    assert rate_limit.client_ip(_Req("1.2.3.4, not-an-ip")) == "172.17.0.1"
+    assert rate_limit.client_ip(_Req(None, host=None)) == "unknown"
+
+
+def test_forging_a_leading_forwarded_for_does_not_evade_the_per_ip_login_cap(client, staff, clock):
+    for i in range(30):
+        res = client.post(
+            "/auth/login",
+            json={"email": f"nobody{i}@example.com", "password": WRONG},
+            headers={"X-Forwarded-For": f"9.9.9.{i}, {REAL}"},
+        )
+        assert res.status_code == 400
+    res = client.post(
+        "/auth/login",
+        json={"email": "fresh@example.com", "password": WRONG},
+        headers={"X-Forwarded-For": f"8.8.8.8, {REAL}"},
+    )
+    assert res.status_code == 429
+
+
+def test_forging_a_leading_forwarded_for_does_not_evade_the_per_ip_otp_cap(client, monkeypatch, clock):
+    from app.services.firebase_auth import InvalidOtpToken
+
+    _otp_seam(monkeypatch, exc=InvalidOtpToken("bad"))
+    for i in range(10):
+        res = client.post(OTP_URL, json={"id_token": ID_TOKEN}, headers={"X-Forwarded-For": f"7.7.7.{i}, {REAL}"})
+        assert res.status_code == 401
+    res = client.post(OTP_URL, json={"id_token": ID_TOKEN}, headers={"X-Forwarded-For": f"6.6.6.6, {REAL}"})
+    assert res.status_code == 429
+
+
+def test_forged_leading_entry_cannot_lock_out_another_visitors_ip(client, staff, clock):
+    # An attacker who "borrows" a victim's IP as the leading entry only burns their own real IP.
+    for _ in range(30):
+        client.post(
+            "/auth/login",
+            json={"email": "nobody@example.com", "password": WRONG},
+            headers={"X-Forwarded-For": f"198.51.100.1, {REAL}"},
+        )
+    res = client.post(
+        "/auth/login",
+        json={"email": EMAIL, "password": PASSWORD},
+        headers={"X-Forwarded-For": "198.51.100.1, 203.0.113.99"},
+    )
+    assert res.status_code == 200

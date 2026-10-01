@@ -6,6 +6,7 @@ failures can overshoot a cap by the number of in-flight requests (single uvicorn
 accepted, revisit if Phase 7 adds workers).
 """
 
+import ipaddress
 import logging
 import math
 from datetime import datetime, timedelta
@@ -75,7 +76,20 @@ def record_failure(db: Session, scope: str, key: str) -> None:
 
 
 def client_ip(request) -> str:
-    return request.client.host if request.client else "unknown"
+    """The visitor's address as seen by nginx, the only proxy in front of uvicorn.
+
+    nginx sends `X-Forwarded-For $proxy_add_x_forwarded_for`, which APPENDS the real peer to
+    whatever the visitor sent, so only the LAST entry is trustworthy; every earlier one is
+    client-controlled and must never key a limit. uvicorn is bound to 127.0.0.1 and is not
+    given a trusted-proxy list, so `request.client.host` is the Docker bridge, not the visitor,
+    and is used only when the header is absent or its last entry is not an IP.
+    """
+    last = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
+    try:
+        ipaddress.ip_address(last)
+        return last
+    except ValueError:
+        return request.client.host if request.client else "unknown"
 
 
 def mask_mobile(n) -> str:
