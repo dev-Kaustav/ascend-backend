@@ -464,7 +464,7 @@ def test_ops_order_detail_shows_where_a_store_order_goes_and_nulls_for_salesman_
         db,
         OrderCreate(
             retailer_id=retailer.id,
-            warehouse_id=db.query(Order).get(order_id).from_entity_id,
+            warehouse_id=db.get(Order, order_id).from_entity_id,
             items=[OrderItemCreate(sku_id=sku.id, quantity=1, unit_price=22.5, discount_amount=4.5)],
         ),
         admin,
@@ -480,7 +480,7 @@ def test_editing_or_deleting_the_saved_address_never_rewrites_an_existing_order(
     headers = auth_headers(user)
     order_id = client.post("/store/orders", json=_order_body(sku, address), headers=headers).json()["id"]
     original_line1 = address.line1
-    original = {key: getattr(db.query(Order).get(order_id), key) for key in SHIP_TO_KEYS}
+    original = {key: getattr(db.get(Order, order_id), key) for key in SHIP_TO_KEYS}
 
     edited = client.patch(
         f"/store/me/addresses/{address.id}",
@@ -489,7 +489,7 @@ def test_editing_or_deleting_the_saved_address_never_rewrites_an_existing_order(
     )
     assert edited.status_code == 200
     db.expire_all()
-    order = db.query(Order).get(order_id)
+    order = db.get(Order, order_id)
     assert order.ship_to_line1 == original_line1
     assert {key: getattr(order, key) for key in SHIP_TO_KEYS} == original
     assert client.get(f"/store/orders/{order_id}", headers=headers).json()["ship_to"]["line1"] == original_line1
@@ -499,7 +499,7 @@ def test_editing_or_deleting_the_saved_address_never_rewrites_an_existing_order(
     db.commit()
     assert client.delete(f"/store/me/addresses/{address.id}", headers=headers).status_code == 204
     db.expire_all()
-    order = db.query(Order).get(order_id)
+    order = db.get(Order, order_id)
     assert order.delivery_address_id is None
     expected = {**original, "delivery_address_id": None}
     assert {key: getattr(order, key) for key in SHIP_TO_KEYS} == expected
@@ -542,9 +542,9 @@ def test_delivering_a_store_order_records_evidence_but_never_moves_the_shop_pin(
     near_id = client.post("/store/orders", json=_order_body(sku, address, 1), headers=headers).json()["id"]
     far_id = client.post("/store/orders", json=_order_body(sku, address, 1), headers=headers).json()["id"]
 
-    _drive_to_delivered(db, db.query(Order).get(near_id), lat=NEARBY_LAT, lng=NEARBY_LNG)
+    _drive_to_delivered(db, db.get(Order, near_id), lat=NEARBY_LAT, lng=NEARBY_LNG)
     # 1.5 km away is a correction for an ordinary order; for a store order it is only evidence.
-    _drive_to_delivered(db, db.query(Order).get(far_id), lat=MOVED_LAT, lng=MOVED_LNG)
+    _drive_to_delivered(db, db.get(Order, far_id), lat=MOVED_LAT, lng=MOVED_LNG)
 
     db.refresh(retailer)
     assert (retailer.latitude, retailer.longitude) == (SHOP_LAT, SHOP_LNG)

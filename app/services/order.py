@@ -635,6 +635,10 @@ def _record_delivery_position(db: Session, order, status: StatusUpdate, current_
         latitude=status.latitude,
         longitude=status.longitude,
         accuracy_m=status.accuracy_m,
+        # A storefront order may go to a saved address that is not the registered shop (D-29), so
+        # the driver standing there says nothing about where the shop is: keep the evidence row,
+        # never drag the registered pin (T-08-30).
+        move_pin=order.ship_to_latitude is None,
     )
 
 
@@ -874,6 +878,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "credit_notes": credit_notes,
         "trails": trails,
         "created_at": order.created_at,
+        **{field: getattr(order, field) for field in _SHIP_TO_FIELDS},
     }
 
 def get_order_detail(db: Session, order_id: int, current_user):

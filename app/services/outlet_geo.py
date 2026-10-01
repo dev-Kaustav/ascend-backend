@@ -68,8 +68,12 @@ def record_delivery_location(
     longitude: float,
     accuracy_m=None,
     outer_limit_overridden: bool = False,
+    move_pin: bool = True,
 ):
     """Write the audit row and, when the reading earns it, move the retailer's pin.
+
+    move_pin=False records the row (retailer_updated False) and never touches the retailer's
+    coordinates: for a delivery to an address that is not the registered shop.
 
     Adds to the session but does not commit: the caller owns the transaction, because in the
     order flow this has to land in the same commit as the status change. A delivery recorded
@@ -78,7 +82,7 @@ def record_delivery_location(
     stored_lat, stored_lng = retailer.latitude, retailer.longitude
     distance_m = distance_to_retailer(retailer, latitude, longitude)
 
-    retailer_updated = should_update_retailer(distance_m, outer_limit_overridden)
+    retailer_updated = move_pin and should_update_retailer(distance_m, outer_limit_overridden)
     if retailer_updated:
         retailer.latitude = latitude
         retailer.longitude = longitude

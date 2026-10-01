@@ -112,6 +112,18 @@ class OrderResponse(BaseModel):
     payments: list[PaymentResponse] = []
     credit_notes: list[CreditNoteResponse] = []
     created_at: Optional[datetime] = None
+    # 08-09 / D-29: where a storefront order was placed to, copied at order time. All None for
+    # salesman orders, which deliver to the retailer's registered address.
+    delivery_address_id: Optional[int] = None
+    ship_to_label: Optional[str] = None
+    ship_to_line1: Optional[str] = None
+    ship_to_line2: Optional[str] = None
+    ship_to_landmark: Optional[str] = None
+    ship_to_city: Optional[str] = None
+    ship_to_state: Optional[str] = None
+    ship_to_pincode: Optional[int] = None
+    ship_to_latitude: Optional[float] = None
+    ship_to_longitude: Optional[float] = None
 
 class OrderListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

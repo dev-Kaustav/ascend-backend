@@ -381,6 +381,10 @@ def test_serialized_shape_is_stable(db):
         "delivery_driver_name", "total_amount", "pending_amount", "taxable_value",
         "gst_amount", "subtotal", "grand_total", "payments", "credit_notes", "trails",
         "created_at",
+        # 08-09: ship-to snapshot, all None for an order that carries none.
+        "delivery_address_id", "ship_to_label", "ship_to_line1", "ship_to_line2",
+        "ship_to_landmark", "ship_to_city", "ship_to_state", "ship_to_pincode",
+        "ship_to_latitude", "ship_to_longitude",
     }
     assert set(result.keys()) == expected_keys
 

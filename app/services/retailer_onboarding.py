@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import get_password_hash
-from app.models import Retailer, RetailerAddress, User
+from app.models import Order, Retailer, RetailerAddress, User
 from app.models.enums import EmployeeRole
 
 logger = logging.getLogger("ascend.auth")
@@ -278,5 +278,11 @@ def delete_address(db: Session, retailer_id: int, address_id: int) -> None:
     )
     if remaining <= 1:
         raise LastAddressError()
+    # orders.delivery_address_id is ON DELETE SET NULL on PostgreSQL; clearing it here as well keeps
+    # the guarantee on backends that do not enforce the FK action (the SQLite test suite). The
+    # order's ship_to_* snapshot is never touched, only the pointer (D-29).
+    db.query(Order).filter(Order.delivery_address_id == address.id).update(
+        {Order.delivery_address_id: None}, synchronize_session=False
+    )
     db.delete(address)
     db.commit()
