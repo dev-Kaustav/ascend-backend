@@ -252,6 +252,7 @@ class StoreOrderDetail(BaseModel):
     created_at: Optional[datetime] = None
     lines: list[StoreOrderLine]
     subtotal: float
+    delivery_charge: float
     total: float
     ship_to: StoreShipTo
     invoice_available: bool
@@ -275,8 +276,13 @@ class StoreQuoteLine(BaseModel):
 
 
 class StoreQuote(BaseModel):
+    """Rupees only (D-05): the delivery charge and the cart value above which it is waived. The
+    percentage that produced the charge is never a field on any store schema."""
+
     lines: list[StoreQuoteLine]
     subtotal: float
+    delivery_charge: float
+    free_delivery_above: Optional[float] = None
     total: float
 
 
@@ -286,6 +292,7 @@ class StoreOrderSummary(BaseModel):
     created_at: Optional[datetime] = None
     item_count: int
     total: float
+    delivery_charge: float
     invoice_available: bool
 
 

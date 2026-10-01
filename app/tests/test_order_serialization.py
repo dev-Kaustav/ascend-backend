@@ -385,6 +385,8 @@ def test_serialized_shape_is_stable(db):
         "delivery_address_id", "ship_to_label", "ship_to_line1", "ship_to_line2",
         "ship_to_landmark", "ship_to_city", "ship_to_state", "ship_to_pincode",
         "ship_to_latitude", "ship_to_longitude",
+        # 08-11: the storefront delivery charge, 0 for an order that carries none.
+        "delivery_charge",
     }
     assert set(result.keys()) == expected_keys
 

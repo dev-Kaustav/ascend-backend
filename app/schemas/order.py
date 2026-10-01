@@ -109,6 +109,9 @@ class OrderResponse(BaseModel):
     gst_amount: Optional[float] = None
     subtotal: Optional[float] = None
     grand_total: Optional[float] = None
+    # 08-11: the server-computed storefront delivery charge, already inside grand_total (0 for
+    # salesman/admin orders).
+    delivery_charge: Optional[float] = None
     payments: list[PaymentResponse] = []
     credit_notes: list[CreditNoteResponse] = []
     created_at: Optional[datetime] = None

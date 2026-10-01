@@ -20,6 +20,7 @@ from app.services.finance import (
     calculate_order_item_totals,
     calculate_order_totals,
     compute_delivery_charge,
+    delivery_charge_totals,
 )
 from app.services.order import (
     InsufficientStockError,
@@ -189,11 +190,23 @@ def quote_cart(db: Session, user, payload) -> dict:
                 "within_stock": line["quantity"] <= cap,
             }
         )
-    totals = calculate_order_totals(SimpleNamespace(items=items))
+    charge = _delivery_charge(db, lines)
+    # The same shape the placed order will have: the charge is taxed at the highest per-item rate
+    # (D-33), so the quote total equals the order's grand_total by construction.
+    priced = SimpleNamespace(
+        items=items,
+        delivery_charge=charge,
+        delivery_charge_gst_rate=max(
+            (sum((tax.rate for tax in item.taxes), ZERO) for item in items), default=ZERO
+        ),
+    )
+    threshold = get_store_settings(db).min_order_value
     return {
         "lines": out_lines,
-        "subtotal": float(totals["subtotal"]),
-        "total": float(totals["grand_total"]),
+        "subtotal": float(calculate_order_totals(SimpleNamespace(items=items))["grand_total"]),
+        "delivery_charge": float(charge),
+        "free_delivery_above": float(threshold) if threshold and threshold > 0 else None,
+        "total": float(calculate_order_totals(priced)["grand_total"]),
     }
 
 
@@ -262,12 +275,14 @@ def _detail(db: Session, order: Order) -> dict:
             }
         )
     totals = calculate_order_totals(order)
+    charge = delivery_charge_totals(order)["line_total"]
     return {
         "id": order.id,
         "status": order.status.value if hasattr(order.status, "value") else order.status,
         "created_at": order.created_at,
         "lines": lines,
-        "subtotal": float(totals["subtotal"]),
+        "subtotal": float(totals["grand_total"] - charge),
+        "delivery_charge": float(charge),
         "total": float(totals["grand_total"]),
         "ship_to": {
             "label": order.ship_to_label,
@@ -321,6 +336,7 @@ def list_store_orders(db: Session, user, limit: int, offset: int) -> dict:
                 "created_at": order.created_at,
                 "item_count": len(order.items),
                 "total": float(calculate_order_totals(order)["grand_total"]),
+                "delivery_charge": float(delivery_charge_totals(order)["line_total"]),
                 "invoice_available": order.invoice is not None,
             }
             for order in orders

@@ -133,7 +133,7 @@ def test_order_detail_is_an_allowlisted_view_of_the_callers_order(client, db):
     body = detail.json()
 
     assert set(body) == {
-        "id", "status", "created_at", "lines", "subtotal", "total", "ship_to", "invoice_available",
+        "id", "status", "created_at", "lines", "subtotal", "delivery_charge", "total", "ship_to", "invoice_available",
     }
     assert body["status"] == "PENDING"
     assert body["invoice_available"] is False
@@ -208,7 +208,7 @@ def test_quote_prices_lines_like_the_order_and_totals_match_the_placed_order(cli
     )
     assert quote.status_code == 200, quote.text
     body = quote.json()
-    assert set(body) == {"lines", "subtotal", "total"}
+    assert set(body) == {"lines", "subtotal", "delivery_charge", "free_delivery_above", "total"}
     (line,) = body["lines"]
     assert line == {
         "sku_id": sku.id,
@@ -393,7 +393,9 @@ def test_orders_list_is_own_orders_newest_first(client, db):
     assert body["total"] == 2
     assert [o["id"] for o in body["items"]] == [second, first]
     assert foreign not in [o["id"] for o in body["items"]]
-    assert set(body["items"][0]) == {"id", "status", "created_at", "item_count", "total", "invoice_available"}
+    assert set(body["items"][0]) == {
+        "id", "status", "created_at", "item_count", "total", "delivery_charge", "invoice_available",
+    }
     assert body["items"][0]["total"] == 36.0 and body["items"][0]["item_count"] == 1
     assert body["items"][0]["status"] == "PENDING" and body["items"][0]["invoice_available"] is False
 

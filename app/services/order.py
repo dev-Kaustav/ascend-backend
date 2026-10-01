@@ -898,6 +898,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "gst_amount": totals["gst_amount"],
         "subtotal": totals["subtotal"],
         "grand_total": totals["grand_total"],
+        "delivery_charge": _round_money(order.delivery_charge),
         "payments": payments,
         "credit_notes": credit_notes,
         "trails": trails,

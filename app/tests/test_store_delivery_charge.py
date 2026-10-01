@@ -528,7 +528,27 @@ def _admin(db):
     return make_user(db, EmployeeRole.ADMIN)
 
 
-def test_ops_order_list_detail_and_summary_include_the_charge(client, db):
+def _sqlite_safe_summary(monkeypatch):
+    """get_admin_summary's timeline calls day.strftime on func.date(...), which PostgreSQL returns
+    as a date but SQLite as a string. Coerce the type so the revenue/outstanding figures under test
+    can be read on the SQLite suite; nothing else in the service is altered."""
+    import sqlalchemy as sa
+
+    from app.services import admin as admin_service
+
+    class _Func:
+        def __getattr__(self, name):
+            return getattr(sa.func, name)
+
+        @staticmethod
+        def date(column):
+            return sa.type_coerce(sa.func.date(column), sa.Date)
+
+    monkeypatch.setattr(admin_service, "func", _Func())
+
+
+def test_ops_order_list_detail_and_summary_include_the_charge(client, db, monkeypatch):
+    _sqlite_safe_summary(monkeypatch)
     catalogue = _catalogue(db)
     sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
     user, _, address = ready_retailer(db)

@@ -520,7 +520,8 @@ def get_orders_page(
     total = query.count()
 
     base_sub, tax_sub = _totals_subqueries(db)
-    total_expr = func.coalesce(base_sub.c.base_total, 0)
+    # The delivery charge is GST-inclusive like the item lines, so it adds to the total as is.
+    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
 
     rows = (
         query.outerjoin(base_sub, base_sub.c.order_id == Order.id)
@@ -752,7 +753,8 @@ def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | 
     payment_status = {row[0].value if hasattr(row[0], "value") else row[0]: row[1] for row in payment_rows}
 
     base_sub, tax_sub = _totals_subqueries(db)
-    total_expr = func.coalesce(base_sub.c.base_total, 0)
+    # The delivery charge is GST-inclusive like the item lines, so it adds to the total as is.
+    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
 
     revenue_q = (
         db.query(func.coalesce(func.sum(total_expr), 0))
