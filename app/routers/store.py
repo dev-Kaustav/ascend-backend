@@ -3,10 +3,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.core.store_deps import get_optional_retailer, get_store_user
+from app.core.store_deps import get_optional_retailer, get_store_retailer, get_store_user
 from app.db.session import get_db
 from app.schemas.store import (
     StoreBrand,
+    StoreAddress,
+    StoreAddressIn,
+    StoreAddressUpdate,
     StoreCategory,
     StoreMe,
     StoreProduct,
@@ -86,3 +89,41 @@ def put_shop(payload: StoreShopIn, user=Depends(get_store_user), db: Session = D
     except retailer_onboarding.ShopAddressRequired:
         raise HTTPException(status_code=422, detail="A delivery location is required")
     return retailer_onboarding.build_store_me(db, user)
+
+
+@router.get("/me/addresses", response_model=list[StoreAddress])
+def list_my_addresses(user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+    return retailer_onboarding.list_addresses(db, user.retailer_id)
+
+
+@router.post("/me/addresses", response_model=StoreAddress, status_code=201)
+def add_my_address(
+    payload: StoreAddressIn, user=Depends(get_store_retailer), db: Session = Depends(get_db)
+):
+    return retailer_onboarding.create_address(db, user.retailer_id, payload)
+
+
+@router.patch("/me/addresses/{address_id}", response_model=StoreAddress)
+def edit_my_address(
+    address_id: int,
+    payload: StoreAddressUpdate,
+    user=Depends(get_store_retailer),
+    db: Session = Depends(get_db),
+):
+    try:
+        return retailer_onboarding.update_address(db, user.retailer_id, address_id, payload)
+    except retailer_onboarding.AddressNotFound:
+        raise HTTPException(status_code=404, detail="Address not found")
+
+
+@router.delete("/me/addresses/{address_id}", status_code=204)
+def remove_my_address(
+    address_id: int, user=Depends(get_store_retailer), db: Session = Depends(get_db)
+):
+    try:
+        retailer_onboarding.delete_address(db, user.retailer_id, address_id)
+    except retailer_onboarding.AddressNotFound:
+        raise HTTPException(status_code=404, detail="Address not found")
+    except retailer_onboarding.LastAddressError:
+        raise HTTPException(status_code=409, detail="Keep at least one delivery address")
+    return Response(status_code=204)

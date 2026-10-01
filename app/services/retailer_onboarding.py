@@ -233,3 +233,50 @@ def list_addresses(db: Session, retailer_id: int) -> list[RetailerAddress]:
         .order_by(RetailerAddress.id.desc())
         .all()
     )
+
+
+class AddressNotFound(Exception):
+    """The address does not exist or belongs to another shop (indistinguishable on purpose)."""
+
+
+class LastAddressError(Exception):
+    """A shop must keep at least one delivery address."""
+
+
+def _get_address(db: Session, retailer_id: int, address_id: int) -> RetailerAddress:
+    address = (
+        db.query(RetailerAddress)
+        .filter(RetailerAddress.id == address_id, RetailerAddress.retailer_id == retailer_id)
+        .first()
+    )
+    if address is None:
+        raise AddressNotFound()
+    return address
+
+
+def create_address(db: Session, retailer_id: int, payload) -> RetailerAddress:
+    address = _new_saved_address(retailer_id, payload)
+    db.add(address)
+    db.commit()
+    return address
+
+
+def update_address(db: Session, retailer_id: int, address_id: int, payload) -> RetailerAddress:
+    address = _get_address(db, retailer_id, address_id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(address, field, value)
+    db.commit()
+    return address
+
+
+def delete_address(db: Session, retailer_id: int, address_id: int) -> None:
+    address = _get_address(db, retailer_id, address_id)
+    remaining = (
+        db.query(func.count(RetailerAddress.id))
+        .filter(RetailerAddress.retailer_id == retailer_id)
+        .scalar()
+    )
+    if remaining <= 1:
+        raise LastAddressError()
+    db.delete(address)
+    db.commit()
