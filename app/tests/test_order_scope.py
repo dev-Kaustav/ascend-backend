@@ -1,4 +1,5 @@
 import itertools
+from datetime import datetime, timezone
 
 import pytest
 
@@ -21,7 +22,7 @@ from app.services.order import (
 _counter = itertools.count()
 
 
-def _user(db, role, *, employee_id=None, retailer_id=None):
+def _user(db, role, *, employee_id=None, retailer_id=None, confirmed=True):
     n = next(_counter)
     user = User(
         email=f"scope-user-{n}@example.com",
@@ -30,6 +31,9 @@ def _user(db, role, *, employee_id=None, retailer_id=None):
         employee_id=employee_id,
         retailer_id=retailer_id,
     )
+    if confirmed and retailer_id is not None:
+        # A retailer user acts on a shop only once they have confirmed it (WR-03).
+        user.shop_confirmed_at = datetime.now(timezone.utc)
     db.add(user)
     db.commit()
     return user
@@ -265,3 +269,55 @@ def test_update_status_invalid_driver_returns_400(client, db):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid delivery driver"
+
+
+# --- WR-03: a linked but unconfirmed retailer user has no shop-scoped access -----------------
+
+
+def _unconfirmed_twin(db, data):
+    """Same retailer link as data["retailer"], but the shop was never confirmed."""
+    return _user(db, EmployeeRole.RETAILER, retailer_id=data["retailer"].retailer_id, confirmed=False)
+
+
+def test_unconfirmed_retailer_is_denied_the_linked_shops_orders_in_the_service(db):
+    data = _scope_fixture(db)
+    unconfirmed = _unconfirmed_twin(db, data)
+    own_order = data["assigned_order"]
+
+    with pytest.raises(OrderScopeError):
+        get_orders_page(db, unconfirmed)
+    with pytest.raises(OrderScopeError):
+        get_order_detail(db, own_order.id, unconfirmed)
+    with pytest.raises(OrderScopeError):
+        get_order_for_invoice_pdf(db, own_order.id, unconfirmed)
+    with pytest.raises(OrderScopeError):
+        update_order_status(db, own_order.id, StatusUpdate(status="CANCELLED"), unconfirmed)
+    db.refresh(own_order)
+    assert own_order.status == OrderStatus.PENDING
+
+
+def test_unconfirmed_retailer_gets_403_on_every_legacy_order_route(client, db):
+    data = _scope_fixture(db)
+    headers = _headers(_unconfirmed_twin(db, data))
+    order_id = data["assigned_order"].id
+
+    assert client.get("/orders", headers=headers).status_code == 403
+    assert client.get(f"/orders/{order_id}", headers=headers).status_code == 403
+    res = client.patch(f"/orders/{order_id}/status", headers=headers, json={"status": "CANCELLED"})
+    assert res.status_code == 403
+    db.expire_all()
+    assert db.get(Order, order_id).status == OrderStatus.PENDING
+
+
+def test_confirmed_retailer_keeps_scoped_access_to_their_own_orders(client, db):
+    data = _scope_fixture(db)
+    headers = _headers(data["retailer"])
+    order_id = data["assigned_order"].id
+
+    listed = client.get("/orders", headers=headers)
+    assert listed.status_code == 200
+    assert [o["id"] for o in listed.json()["items"]] == [order_id]
+    assert client.get(f"/orders/{order_id}", headers=headers).status_code == 200
+    assert client.get(f"/orders/{data['other_order'].id}", headers=headers).status_code == 403
+    res = client.patch(f"/orders/{order_id}/status", headers=headers, json={"status": "CANCELLED"})
+    assert res.status_code == 200, res.text

@@ -86,6 +86,18 @@ def roles_for_transition(current: OrderStatus, next_status: OrderStatus) -> froz
     return _ALLOWED_TRANSITIONS.get((current, next_status), frozenset())
 
 
+def _retailer_scope_id(current_user):
+    """The shop a RETAILER user may act on, or None.
+
+    A user is linked to a retailer record on first OTP login, from a mobile-number match alone
+    (D-20), before they have confirmed the shop is theirs. Until `shop_confirmed_at` is set the
+    link grants no access to that shop's orders, exactly as the /store routes already enforce.
+    """
+    if getattr(current_user, "shop_confirmed_at", None) is None:
+        return None
+    return getattr(current_user, "retailer_id", None)
+
+
 def _check_role_for_transition(current_user, next_status: OrderStatus, order: "Order"):
     role = get_role_value(current_user)
     allowed = roles_for_transition(order.status, next_status)
@@ -95,7 +107,8 @@ def _check_role_for_transition(current_user, next_status: OrderStatus, order: "O
     if role == "ADMIN":
         return
     if role == "RETAILER":
-        if not getattr(current_user, "retailer_id", None) or current_user.retailer_id != order.to_entity_id:
+        retailer_id = _retailer_scope_id(current_user)
+        if not retailer_id or retailer_id != order.to_entity_id:
             raise StatusTransitionForbiddenError("Order does not belong to your account")
         # Fall through to the table check below — a retailer is only listed on
         # (PENDING, CANCELLED) and (READY_TO_SHIP, CANCELLED); any other transition is
@@ -133,7 +146,7 @@ def _assert_order_in_scope(current_user, order: Order, db: Session):
             raise OrderScopeError("Order is not assigned to this driver")
         return
     if role == "RETAILER":
-        retailer_id = getattr(current_user, "retailer_id", None)
+        retailer_id = _retailer_scope_id(current_user)
         if not retailer_id or order.to_entity_id != retailer_id:
             raise OrderScopeError("Order does not belong to your account")
         return
@@ -161,7 +174,7 @@ def scoped_orders_query(db: Session, current_user):
             raise OrderScopeError("Driver missing employee record")
         return query.filter(Order.delivery_driver_id == employee_id)
     if role == "RETAILER":
-        retailer_id = getattr(current_user, "retailer_id", None)
+        retailer_id = _retailer_scope_id(current_user)
         if not retailer_id:
             raise OrderScopeError("Retailer missing retailer record")
         return query.filter(Order.to_entity_id == retailer_id)
@@ -553,7 +566,7 @@ def create_outgoing_order(
     elif role_value == "RETAILER":
         # A storefront retailer orders only for their own shop (T-08-28). Attribution follows the
         # shop's assigned salesman (D-25), NULL for a self-signup, so PORT-05 coverage counts it.
-        own_retailer_id = getattr(current_user, "retailer_id", None)
+        own_retailer_id = _retailer_scope_id(current_user)
         if not own_retailer_id or order.retailer_id != own_retailer_id:
             raise RetailerAccessError("Order must be for your own shop")
         own_retailer = db.query(Retailer).filter(Retailer.id == own_retailer_id).first()

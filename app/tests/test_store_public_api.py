@@ -399,6 +399,21 @@ def test_retailer_token_adds_trade_price_and_orderable_maximum(client, db):
     assert detail == listed[few.id]
 
 
+def test_linked_but_unconfirmed_retailer_gets_the_anonymous_shape(client, db):
+    """WR-03: auto-linked by mobile number, shop not yet confirmed: no trade price or stock cap."""
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    sku = _peanut(db, warehouse, brand, category)
+    retailer = make_retailer(db, name="Linked Not Confirmed")
+    unconfirmed = make_user(db, EmployeeRole.RETAILER, retailer_id=retailer.id, confirmed=False)
+    assert unconfirmed.shop_confirmed_at is None
+    for url in (f"/store/products/{sku.id}", "/store/products"):
+        body = client.get(url, headers=auth_headers(unconfirmed)).json()
+        item = body["items"][0] if "items" in body else body
+        assert set(item) == ANON_KEYS
+        assert_no_forbidden_keys(body)
+
+
 def test_non_retailer_identities_get_exactly_the_anonymous_shape(client, db):
     warehouse, brand = _catalogue(db)
     category = make_category(db, "Roasted Nuts & Seeds")

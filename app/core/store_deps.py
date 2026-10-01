@@ -16,15 +16,20 @@ def get_optional_retailer(
     - No Authorization header: None (anonymous).
     - A header that does not authenticate (malformed, expired, wrong token type, stale session,
       deleted or inactive user): the 401 propagates so the client refreshes its token.
-    - A valid user who is not a RETAILER with a shop (staff, or a retailer user with no
-      retailer_id yet): None, i.e. exactly the anonymous shape.
+    - A valid user who is not a RETAILER with a confirmed shop (staff, a retailer user with no
+      retailer_id yet, or one auto-linked to a shop they have not confirmed): None, i.e.
+      exactly the anonymous shape, so trade prices and stock caps are not shown.
 
     Deliberately not require_roles("RETAILER"): that lets ADMIN through.
     """
     if credentials is None:
         return None
     user = get_current_active_user(get_current_user(credentials, db))
-    if get_role_value(user) != "RETAILER" or user.retailer_id is None:
+    if (
+        get_role_value(user) != "RETAILER"
+        or user.retailer_id is None
+        or user.shop_confirmed_at is None
+    ):
         return None
     return user
 

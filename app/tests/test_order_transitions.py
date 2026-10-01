@@ -17,6 +17,7 @@ Two halves:
     reserved-status unreachability, and the D5 invoice-immutability fence.
 """
 import itertools
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -134,6 +135,7 @@ def test_role_is_enforced_per_transition(frm, to, role):
     user = SimpleNamespace(
         role=role.value,
         retailer_id=42 if role == EmployeeRole.RETAILER else None,
+        shop_confirmed_at=datetime.now(timezone.utc) if role == EmployeeRole.RETAILER else None,
         employee_id=7 if role == EmployeeRole.DRIVER else None,
     )
 
@@ -163,6 +165,18 @@ def test_retailer_ownership_is_checked_before_the_role_table():
     no_retailer_user = SimpleNamespace(role=EmployeeRole.RETAILER.value, retailer_id=None)
     with pytest.raises(StatusTransitionForbiddenError):
         _check_role_for_transition(no_retailer_user, OrderStatus.CANCELLED, order)
+
+
+def test_unconfirmed_linked_retailer_cannot_transition_the_linked_shops_order():
+    """WR-03: auto-linked by mobile number but shop not yet confirmed: no cancel rights."""
+    order = SimpleNamespace(status=OrderStatus.PENDING, to_entity_id=7)
+    unconfirmed = SimpleNamespace(role=EmployeeRole.RETAILER.value, retailer_id=7, shop_confirmed_at=None)
+    with pytest.raises(StatusTransitionForbiddenError):
+        _check_role_for_transition(unconfirmed, OrderStatus.CANCELLED, order)
+    confirmed = SimpleNamespace(
+        role=EmployeeRole.RETAILER.value, retailer_id=7, shop_confirmed_at=datetime.now(timezone.utc)
+    )
+    _check_role_for_transition(confirmed, OrderStatus.CANCELLED, order)  # must not raise
 
 
 def test_driver_cannot_transition_unassigned_order():
@@ -260,6 +274,8 @@ def _user(db, role, retailer_id=None, employee_id=None):
         role=role,
         retailer_id=retailer_id,
         employee_id=employee_id,
+        # A storefront retailer user acts on a shop only once they have confirmed it (WR-03).
+        shop_confirmed_at=datetime.now(timezone.utc) if retailer_id is not None else None,
     )
     db.add(user)
     db.commit()
