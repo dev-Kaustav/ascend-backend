@@ -203,9 +203,16 @@ def order_form_lookups(db: Session, current_user):
     }
 
 
+def _registered_shop_state(retailer: Retailer | None) -> str | None:
+    """The one place GST state is chosen (D-35): the retailer's registered shop state, never the
+    state of a chosen delivery address. Order tax rows and Invoice.place_of_supply/is_inter_state
+    both go through here; a delivery address in another state only changes the printed Ship To."""
+    return getattr(retailer, "state", None)
+
+
 def _is_inter_state(warehouse: Warehouse | None, retailer: Retailer | None) -> bool:
     warehouse_state = getattr(warehouse, "state", None)
-    retailer_state = getattr(retailer, "state", None)
+    retailer_state = _registered_shop_state(retailer)
     return bool(warehouse_state and retailer_state and warehouse_state != retailer_state)
 
 def _fallback_tax_rate(item) -> Decimal:

@@ -243,7 +243,7 @@ def issue_invoice_for_order(
     # would make a module-level `from app.services.order import _is_inter_state` here
     # a circular import (order.py -> invoice.py -> order.py). Importing inside the
     # function sidesteps that in advance rather than fixing it later.
-    from app.services.order import _is_inter_state
+    from app.services.order import _is_inter_state, _registered_shop_state
 
     profile = _get_or_create_company_profile(db)
     warehouse = db.query(Warehouse).filter(Warehouse.id == order.from_entity_id).first()
@@ -280,8 +280,9 @@ def issue_invoice_for_order(
         invoice_type=InvoiceType.B2B.value if buyer_gstin else InvoiceType.B2C.value,
         supply_type=SupplyType.REGULAR.value,
         reverse_charge=False,
-        # Place of supply for goods is the recipient's location.
-        place_of_supply=buyer_state,
+        # Place of supply follows the registered shop state (D-35), not the Ship To address.
+        # CA confirmation of this reading is still pending.
+        place_of_supply=_registered_shop_state(retailer),
         is_inter_state=inter_state,
         supplier_legal_name=profile.legal_name or "Ascend Foods",
         supplier_gstin=profile.gstin,
