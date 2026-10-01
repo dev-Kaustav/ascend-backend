@@ -1,5 +1,10 @@
 from sqlalchemy.orm import Session
-from app.core.security import verify_password, create_access_token, create_refresh_token
+from app.core.security import (
+    RETAILER_REFRESH_TOKEN_EXPIRE_DAYS,
+    create_access_token,
+    create_refresh_token,
+    verify_password,
+)
 from app.models import User
 
 def authenticate_user(db: Session, email: str, password: str):
@@ -16,5 +21,8 @@ def create_tokens(user: User):
     # value — which is every token minted before the change, on every device.
     claims = {"user_id": user.id, "role": role_value, "tv": user.token_version or 0}
     access_token = create_access_token(claims)
-    refresh_token = create_refresh_token(claims)
+    refresh_token = create_refresh_token(
+        claims,
+        days=RETAILER_REFRESH_TOKEN_EXPIRE_DAYS if role_value == "RETAILER" else None,
+    )
     return access_token, refresh_token

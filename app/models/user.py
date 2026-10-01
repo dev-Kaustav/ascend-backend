@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, BigInteger, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -7,6 +7,7 @@ from .enums import EmployeeRole
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("phone_number", name="uq_users_phone_number"),)
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False)
@@ -14,6 +15,12 @@ class User(Base):
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)
     retailer_id = Column(Integer, ForeignKey("retailers.id"), nullable=True)
+    # The real lookup key for retailers who sign in with a phone OTP (08-03). Same type as
+    # retailers.mobile_number. NULL for staff; unique, so two first logins racing on one
+    # number end with one row.
+    phone_number = Column(BigInteger, nullable=True)
+    # Set once the retailer has confirmed their shop; drives the one-time "Confirm your shop" sheet.
+    shop_confirmed_at = Column(DateTime(timezone=True), nullable=True)
     role = Column(Enum(EmployeeRole, name="employee_role"), nullable=False)
     is_active = Column(Boolean, default=True)
     # Bumped whenever this user's password changes, by them or by an admin. Every token

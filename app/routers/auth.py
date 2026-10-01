@@ -1,11 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.session import get_db
+from app.services import firebase_auth
 from app.services.auth import authenticate_user, create_tokens
-from app.schemas.auth import LoginRequest, TokenResponse, RefreshRequest, PasswordChangeRequest
+from app.services.firebase_auth import InvalidOtpToken, OtpVerifierUnavailable
+from app.services.retailer_onboarding import (
+    UnsupportedMobile,
+    get_or_create_otp_user,
+    link_existing_retailer,
+    normalize_indian_mobile,
+    onboarding_state,
+    shop_prefill,
+)
+from app.schemas.auth import (
+    LoginRequest,
+    TokenResponse,
+    RefreshRequest,
+    PasswordChangeRequest,
+    RetailerFirebaseLoginRequest,
+    RetailerLoginResponse,
+)
 from app.core.deps import get_current_active_user
 from app.core.security import verify_password, get_password_hash
-from app.models import User
+from app.models import Retailer, User
 
 router = APIRouter()
 
@@ -23,6 +40,9 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
     payload = decode_token(request.refresh_token)
     if not payload:
         raise HTTPException(status_code=400, detail="Invalid refresh token")
+    # An access token must not mint new sessions. Tokens minted before "typ" existed carry none.
+    if payload.get("typ") == "access":
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
     user_id = payload.get("user_id")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -41,6 +61,40 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Session expired, sign in again")
     access_token, refresh_token = create_tokens(user)
     return {"access_token": access_token, "refresh_token": refresh_token}
+
+@router.post("/retailer/firebase", response_model=RetailerLoginResponse)
+def retailer_firebase_login(payload: RetailerFirebaseLoginRequest, db: Session = Depends(get_db)):
+    """Exchange a Firebase phone-auth ID token for our own session (STORE-09, D-17..D-20).
+
+    One flow signs a retailer in or up. The number comes only from the verified token, so it
+    cannot be claimed without owning it.
+    """
+    try:
+        e164 = firebase_auth.verify_phone_id_token(payload.id_token)
+    except InvalidOtpToken:
+        raise HTTPException(status_code=401, detail="Could not verify the OTP. Please try again.")
+    except OtpVerifierUnavailable:
+        raise HTTPException(status_code=503, detail="Login is temporarily unavailable.")
+    try:
+        mobile = normalize_indian_mobile(e164)
+    except UnsupportedMobile:
+        raise HTTPException(status_code=400, detail="Only Indian (+91) mobile numbers can sign in.")
+
+    user = get_or_create_otp_user(db, mobile)
+    if user.deleted_at or not user.is_active:
+        raise HTTPException(status_code=401, detail="Account disabled")
+    retailer = link_existing_retailer(db, user)
+    state = onboarding_state(user)
+    if state == "confirm" and retailer is None:
+        # Linked on an earlier login but never confirmed: offer the same pre-fill again.
+        retailer = db.query(Retailer).filter(Retailer.id == user.retailer_id).first()
+    access_token, refresh_token = create_tokens(user)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "onboarding": state,
+        "prefill": shop_prefill(retailer) if state == "confirm" and retailer else None,
+    }
 
 @router.get("/me")
 def get_me(

@@ -18,6 +18,8 @@ def get_current_user(
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if payload.get("typ") == "refresh":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     user_id = payload.get("user_id")
     role = payload.get("role")
     user = db.query(User).filter(User.id == user_id).first()
