@@ -1,10 +1,19 @@
 """Public storefront catalogue (08-04): what an anonymous visitor and a retailer see."""
+from datetime import datetime, timedelta
 from decimal import Decimal
 
+from jose import jwt
+
+from app.core.security import SECRET_KEY, create_refresh_token
+from app.models.enums import EmployeeRole
+from app.schemas.store import StoreBrand, StoreCategory, StoreProduct
 from app.tests.store_helpers import (
+    auth_headers,
     make_brand,
     make_category,
+    make_retailer,
     make_storefront,
+    make_user,
     stocked_sku,
 )
 
@@ -327,3 +336,158 @@ def test_pack_provision_fields_never_appear(client, db):
 
     assert "pack_type" not in text
     assert "units_per_pack" not in text
+
+
+# ---------------------------------------------------------------------------
+# Task 3: retailer view, 401 on a bad token, Vary header, leak-proof anonymous view
+# ---------------------------------------------------------------------------
+
+RETAILER_ONLY = {"trade_price", "max_orderable"}
+
+FORBIDDEN_KEYS = {
+    "rate", "amount", "distributor_landing_price", "discount_amount", "discount_percent",
+    "sgst_percent", "sgst_amount", "cgst_percent", "cgst_amount", "igst_percent", "igst_amount",
+    "trade_price", "max_orderable", "quantity", "total_quantity", "reserved_quantity",
+    "remaining_quantity", "available_quantity", "warehouse_id", "pack_type", "units_per_pack",
+}
+
+
+def _walk_keys(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _walk_keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_keys(value)
+
+
+def assert_no_forbidden_keys(body):
+    keys = set(_walk_keys(body))
+    assert not (keys & FORBIDDEN_KEYS), keys & FORBIDDEN_KEYS
+    assert not [k for k in keys if "percent" in k.lower()], keys
+
+
+def _all_routes(sku_id):
+    return ["/store/categories", "/store/brands", "/store/products", f"/store/products/{sku_id}"]
+
+
+def _retailer_headers(db):
+    retailer = make_retailer(db, name="Kirana One")
+    return auth_headers(make_user(db, EmployeeRole.RETAILER, retailer_id=retailer.id))
+
+
+def test_retailer_token_adds_trade_price_and_orderable_maximum(client, db):
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    plenty = _peanut(db, warehouse, brand, category, name="Plenty", code="P-1", amount="6.125", qty=1500)
+    few = _peanut(db, warehouse, brand, category, name="Few", code="F-1", amount="6.50", qty=7)
+    none_left = _peanut(db, warehouse, brand, category, name="None", code="N-1", amount="7", qty=0)
+    headers = _retailer_headers(db)
+
+    listed = {i["id"]: i for i in client.get("/store/products", headers=headers).json()["items"]}
+
+    assert listed[plenty.id]["trade_price"] == 6.13  # half-up from 6.125
+    assert listed[plenty.id]["max_orderable"] == 999  # capped at MAX_LINE_QUANTITY
+    assert listed[few.id]["trade_price"] == 6.5
+    assert listed[few.id]["max_orderable"] == 7
+    assert listed[none_left.id]["trade_price"] == 7.0
+    assert listed[none_left.id]["max_orderable"] == 0
+    assert listed[none_left.id]["in_stock"] is False
+    assert set(listed[few.id]) == ANON_KEYS | RETAILER_ONLY
+    detail = client.get(f"/store/products/{few.id}", headers=headers).json()
+    assert detail == listed[few.id]
+
+
+def test_non_retailer_identities_get_exactly_the_anonymous_shape(client, db):
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    sku = _peanut(db, warehouse, brand, category)
+    shopless_retailer = make_user(db, EmployeeRole.RETAILER, retailer_id=None)
+    identities = {
+        "admin": make_user(db, EmployeeRole.ADMIN),
+        "salesman": make_user(db, EmployeeRole.SALESMAN),
+        "accountant": make_user(db, EmployeeRole.ACCOUNTANT),
+        "shopless retailer": shopless_retailer,
+    }
+    for label, user in identities.items():
+        for url in (f"/store/products/{sku.id}", "/store/products"):
+            response = client.get(url, headers=auth_headers(user))
+            assert response.status_code == 200, label
+            body = response.json()
+            item = body["items"][0] if "items" in body else body
+            assert set(item) == ANON_KEYS, label
+            assert_no_forbidden_keys(body)
+
+
+def test_bad_tokens_get_401_on_every_catalogue_route(client, db):
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    sku = _peanut(db, warehouse, brand, category)
+    retailer = make_retailer(db, name="Kirana One")
+    user = make_user(db, EmployeeRole.RETAILER, retailer_id=retailer.id)
+    expired = jwt.encode(
+        {"user_id": user.id, "role": "RETAILER", "tv": 0, "typ": "access",
+         "exp": datetime.utcnow() - timedelta(minutes=1)},
+        SECRET_KEY, algorithm="HS256",
+    )
+    stale_tv = jwt.encode(
+        {"user_id": user.id, "role": "RETAILER", "tv": 5, "typ": "access",
+         "exp": datetime.utcnow() + timedelta(minutes=5)},
+        SECRET_KEY, algorithm="HS256",
+    )
+    refresh = create_refresh_token({"user_id": user.id, "role": "RETAILER", "tv": 0})
+    for token in ("not-a-jwt", expired, stale_tv, refresh):
+        for url in _all_routes(sku.id):
+            response = client.get(url, headers={"Authorization": f"Bearer {token}"})
+            assert response.status_code == 401, (url, token[:12])
+
+    # Deleted or inactive user: the token is well-formed but the account is not usable.
+    user.is_active = False
+    db.commit()
+    assert client.get("/store/products", headers=auth_headers(user)).status_code == 401
+
+
+def _vary_tokens(response):
+    # CORSMiddleware may append "Origin" to the same header, so compare tokens.
+    return {t.strip().lower() for t in response.headers.get("vary", "").split(",") if t.strip()}
+
+
+def test_every_catalogue_route_sends_vary_authorization(client, db):
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    sku = _peanut(db, warehouse, brand, category)
+    for headers in ({}, _retailer_headers(db)):
+        for url in _all_routes(sku.id):
+            response = client.get(url, headers=headers)
+            assert response.status_code == 200
+            assert _vary_tokens(response) >= {"authorization"}, url
+    missing = client.get("/store/products/987654")
+    assert missing.status_code == 404
+    assert "authorization" in _vary_tokens(missing)
+
+
+def test_anonymous_bodies_contain_no_forbidden_key_anywhere(client, db):
+    warehouse, brand = _catalogue(db)
+    category = make_category(db, "Roasted Nuts & Seeds")
+    sku = _peanut(db, warehouse, brand, category, qty=7)
+    _peanut(db, warehouse, brand, category, name="Out", code="O-1", qty=0)
+    sku.pack_type = "box"
+    sku.units_per_pack = 12
+    sku.discount_amount = Decimal("1.5")
+    sku.discount_percent = Decimal("10")
+    db.commit()
+
+    for url in _all_routes(sku.id):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert_no_forbidden_keys(response.json())
+    # The stock count 7 is never the value of any key either.
+    assert '"7"' not in client.get("/store/products").text
+    assert ":7" not in client.get("/store/products").text.replace(" ", "")
+
+
+def test_response_schema_field_sets_are_the_allowlist():
+    assert set(StoreProduct.model_fields) == ANON_KEYS | RETAILER_ONLY
+    assert set(StoreBrand.model_fields) == {"id", "name"}
+    assert set(StoreCategory.model_fields) == {"id", "name", "icon_url"}
