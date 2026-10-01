@@ -4,12 +4,15 @@ Explicit allowlists: a field exists here only if a storefront visitor may see it
 these from Brand's contact fields, SKU cost/tax columns or any order serialiser.
 """
 import re
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.enums import INDIAN_STATES
 from app.schemas.auth import RetailerShopPrefill
+from app.services.store_catalogue import MAX_LINE_QUANTITY
+from app.services.store_order import MAX_CART_LINES
 
 
 class StoreCategory(BaseModel):
@@ -205,3 +208,50 @@ class StoreMe(BaseModel):
     shop: Optional[StoreShop] = None
     prefill: Optional[RetailerShopPrefill] = None
     addresses: list[StoreAddress] = []
+
+
+# --- Checkout (08-09) ---------------------------------------------------------------------------
+# Requests carry sku ids, whole-packet quantities and an address id and nothing else. Pydantic's
+# default extra="ignore" drops any client-sent price, tax, retailer or warehouse field: criterion
+# 3 asks for those to be ignored, not rejected. Do not set extra="forbid" here.
+
+
+class StoreCartLineIn(BaseModel):
+    sku_id: int
+    quantity: int = Field(..., ge=1, le=MAX_LINE_QUANTITY)
+
+
+class StoreOrderIn(BaseModel):
+    items: list[StoreCartLineIn] = Field(..., min_length=1, max_length=MAX_CART_LINES)
+    address_id: int
+
+
+class StoreShipTo(BaseModel):
+    label: Optional[str] = None
+    line1: Optional[str] = None
+    line2: Optional[str] = None
+    landmark: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[int] = None
+
+
+class StoreOrderLine(BaseModel):
+    sku_id: int
+    name: Optional[str] = None
+    image_url: Optional[str] = None
+    pack_size: Optional[str] = None
+    quantity: int
+    mrp: float
+    line_total: float
+
+
+class StoreOrderDetail(BaseModel):
+    id: int
+    status: str
+    created_at: Optional[datetime] = None
+    lines: list[StoreOrderLine]
+    subtotal: float
+    total: float
+    ship_to: StoreShipTo
+    invoice_available: bool

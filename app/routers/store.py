@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.core.store_deps import get_optional_retailer, get_store_retailer, get_store_user
 from app.db.session import get_db
 from app.schemas.store import (
+    StoreOrderDetail,
+    StoreOrderIn,
     StoreBrand,
     StoreAddress,
     StoreAddressIn,
@@ -16,7 +18,8 @@ from app.schemas.store import (
     StoreProductPage,
     StoreShopIn,
 )
-from app.services import retailer_onboarding, store_catalogue
+from app.services import retailer_onboarding, store_catalogue, store_order
+from app.services.order import RetailerAccessError
 
 router = APIRouter()
 
@@ -127,3 +130,31 @@ def remove_my_address(
     except retailer_onboarding.LastAddressError:
         raise HTTPException(status_code=409, detail="Keep at least one delivery address")
     return Response(status_code=204)
+
+
+@router.post("/orders", response_model=StoreOrderDetail, status_code=201)
+def place_order(payload: StoreOrderIn, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+    try:
+        order = store_order.place_store_order(db, user, payload)
+        return store_order.get_store_order(db, user, order.id)
+    except store_order.StoreClosed:
+        raise HTTPException(status_code=503, detail="Store is not taking orders right now")
+    except retailer_onboarding.AddressNotFound:
+        raise HTTPException(status_code=404, detail="Address not found")
+    except store_order.UnknownProducts as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Some products are not available", "sku_ids": exc.sku_ids},
+        )
+    except store_order.InvalidCart as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RetailerAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@router.get("/orders/{order_id}", response_model=StoreOrderDetail)
+def get_order(order_id: int, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+    try:
+        return store_order.get_store_order(db, user, order_id)
+    except store_order.StoreOrderNotFound:
+        raise HTTPException(status_code=404, detail="Order not found")

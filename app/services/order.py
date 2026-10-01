@@ -507,7 +507,24 @@ def _build_trail_description(order: Order, next_status: OrderStatus) -> str:
     return f"Status changed to {next_status.value}"
 
 
-def create_outgoing_order(db: Session, order: OrderCreate, current_user):
+_SHIP_TO_FIELDS = (
+    "delivery_address_id",
+    "ship_to_label",
+    "ship_to_line1",
+    "ship_to_line2",
+    "ship_to_landmark",
+    "ship_to_city",
+    "ship_to_state",
+    "ship_to_pincode",
+    "ship_to_latitude",
+    "ship_to_longitude",
+)
+
+
+def create_outgoing_order(db: Session, order: OrderCreate, current_user, *, ship_to: dict | None = None):
+    """`ship_to` is the storefront's delivery-address snapshot (D-29): a dict keyed by the Order
+    ship-to column names (delivery_address_id, ship_to_label, ...). Callers that pass nothing
+    (every ops/salesman path) get an order with no snapshot, as before."""
     role_value = get_role_value(current_user)
     salesman_id = None
     if role_value == "SALESMAN":
@@ -517,6 +534,14 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
         if not retailer or retailer.assigned_salesman_id != current_user.employee_id:
             raise RetailerAccessError("Retailer not assigned to salesman")
         salesman_id = current_user.employee_id
+    elif role_value == "RETAILER":
+        # A storefront retailer orders only for their own shop (T-08-28). Attribution follows the
+        # shop's assigned salesman (D-25), NULL for a self-signup, so PORT-05 coverage counts it.
+        own_retailer_id = getattr(current_user, "retailer_id", None)
+        if not own_retailer_id or order.retailer_id != own_retailer_id:
+            raise RetailerAccessError("Order must be for your own shop")
+        own_retailer = db.query(Retailer).filter(Retailer.id == own_retailer_id).first()
+        salesman_id = own_retailer.assigned_salesman_id if own_retailer else None
     elif order.salesman_id:
         salesman_id = order.salesman_id
 
@@ -545,6 +570,9 @@ def create_outgoing_order(db: Session, order: OrderCreate, current_user):
             status=OrderStatus.PENDING,
             payment_status=PaymentStatus.CREDIT,
         )
+        for field in _SHIP_TO_FIELDS:
+            if ship_to and field in ship_to:
+                setattr(db_order, field, ship_to[field])
         db.add(db_order)
         db.flush()
 
