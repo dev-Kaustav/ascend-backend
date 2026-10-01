@@ -82,15 +82,26 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
     return {"access_token": access_token, "refresh_token": refresh_token}
 
 @router.post("/retailer/firebase", response_model=RetailerLoginResponse)
-def retailer_firebase_login(payload: RetailerFirebaseLoginRequest, db: Session = Depends(get_db)):
+def retailer_firebase_login(
+    payload: RetailerFirebaseLoginRequest, http_request: Request, db: Session = Depends(get_db)
+):
     """Exchange a Firebase phone-auth ID token for our own session (STORE-09, D-17..D-20).
 
     One flow signs a retailer in or up. The number comes only from the verified token, so it
     cannot be claimed without owning it.
     """
+    ip = rate_limit.client_ip(http_request)
+    try:
+        rate_limit.check(db, "otp_ip", ip)
+    except rate_limit.RateLimited as exc:
+        raise _too_many(exc)
     try:
         e164 = firebase_auth.verify_phone_id_token(payload.id_token)
     except InvalidOtpToken:
+        # Only a rejected token counts as a guess; an outage (503) or a non-+91 number (400) does not.
+        # Never log the id_token or the number.
+        rate_limit.record_failure(db, "otp_ip", ip)
+        rate_limit.auth_logger.warning("otp_failed ip=%s", ip)
         raise HTTPException(status_code=401, detail="Could not verify the OTP. Please try again.")
     except OtpVerifierUnavailable:
         raise HTTPException(status_code=503, detail="Login is temporarily unavailable.")

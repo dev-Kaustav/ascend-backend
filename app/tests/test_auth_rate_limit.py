@@ -192,11 +192,11 @@ def test_thirty_failed_logins_from_one_ip_block_the_next_attempt(client, staff, 
     assert _login(client, email="another@example.com", password=WRONG).status_code == 429
 
 
-def test_another_ip_can_still_log_in_while_one_email_is_locked(client, staff, clock, monkeypatch):
+def test_email_lock_does_not_depend_on_the_callers_ip(client, staff, clock, monkeypatch):
     for _ in range(5):
         _login(client, password=WRONG)
     assert _login(client).status_code == 429
-    # The per-email cap is not IP-dependent, so the same email stays locked from anywhere...
+    # The per-email cap is not IP-dependent: moving to another IP does not reset it.
     monkeypatch.setattr(rate_limit, "client_ip", lambda request: "198.51.100.7")
     assert _login(client).status_code == 429
 

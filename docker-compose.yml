@@ -9,5 +9,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       SECRET_KEY: ${SECRET_KEY}
+      # Lets uvicorn take the client address from nginx's X-Forwarded-For so the auth rate
+      # limiter sees the real visitor IP, not the Docker bridge. Safe ONLY because ports stays
+      # "127.0.0.1:8000:8000": only the host's nginx can reach uvicorn, so the header cannot be
+      # forged by a direct caller. nginx must send `X-Forwarded-For $proxy_add_x_forwarded_for`.
+      FORWARDED_ALLOW_IPS: "*"
 
     restart: unless-stopped
