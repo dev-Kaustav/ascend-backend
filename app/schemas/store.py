@@ -255,3 +255,54 @@ class StoreOrderDetail(BaseModel):
     total: float
     ship_to: StoreShipTo
     invoice_available: bool
+
+
+class StoreCartIn(BaseModel):
+    items: list[StoreCartLineIn] = Field(..., min_length=1, max_length=MAX_CART_LINES)
+
+
+class StoreQuoteLine(BaseModel):
+    sku_id: int
+    name: Optional[str] = None
+    image_url: Optional[str] = None
+    pack_size: Optional[str] = None
+    mrp: float
+    trade_price: float
+    quantity: int
+    line_total: float
+    max_orderable: int
+    within_stock: bool
+
+
+class StoreQuote(BaseModel):
+    lines: list[StoreQuoteLine]
+    subtotal: float
+    total: float
+
+
+class StoreOrderSummary(BaseModel):
+    id: int
+    status: str
+    created_at: Optional[datetime] = None
+    item_count: int
+    total: float
+    invoice_available: bool
+
+
+class StoreOrderPage(BaseModel):
+    items: list[StoreOrderSummary]
+    total: int
+
+
+class StoreStockItem(BaseModel):
+    sku_id: int
+    max_quantity: int
+
+
+class StoreStockConflict(BaseModel):
+    """409 body for a cart that no longer fits the stock. Carries the per-line cap only: no
+    warehouse name, no free-text count (D-08, D-09, T-08-27)."""
+
+    code: Literal["STOCK_CHANGED"] = "STOCK_CHANGED"
+    message: str
+    items: list[StoreStockItem]

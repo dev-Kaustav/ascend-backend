@@ -1,13 +1,18 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.store_deps import get_optional_retailer, get_store_retailer, get_store_user
 from app.db.session import get_db
 from app.schemas.store import (
+    StoreCartIn,
     StoreOrderDetail,
     StoreOrderIn,
+    StoreOrderPage,
+    StoreQuote,
+    StoreStockConflict,
     StoreBrand,
     StoreAddress,
     StoreAddressIn,
@@ -132,24 +137,70 @@ def remove_my_address(
     return Response(status_code=204)
 
 
-@router.post("/orders", response_model=StoreOrderDetail, status_code=201)
+STOCK_CHANGED_MESSAGE = "Stock changed for some items. Please review your cart."
+
+
+def _checkout_http_error(exc):
+    """Map the checkout service's refusals onto responses. Raises exc itself when it is not one
+    of them, so an unexpected error is never swallowed."""
+    if isinstance(exc, store_order.StoreClosed):
+        return HTTPException(status_code=503, detail="Store is not taking orders right now")
+    if isinstance(exc, retailer_onboarding.AddressNotFound):
+        return HTTPException(status_code=404, detail="Address not found")
+    if isinstance(exc, store_order.UnknownProducts):
+        return HTTPException(
+            status_code=422,
+            detail={"message": "Some products are not available", "sku_ids": exc.sku_ids},
+        )
+    if isinstance(exc, store_order.InvalidCart):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, RetailerAccessError):
+        return HTTPException(status_code=403, detail=str(exc))
+    raise exc
+
+
+_CHECKOUT_ERRORS = (
+    store_order.StoreClosed,
+    retailer_onboarding.AddressNotFound,
+    store_order.UnknownProducts,
+    store_order.InvalidCart,
+    RetailerAccessError,
+)
+
+
+@router.post("/cart/quote", response_model=StoreQuote)
+def quote_cart(payload: StoreCartIn, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+    try:
+        return store_order.quote_cart(db, user, payload)
+    except _CHECKOUT_ERRORS as exc:
+        raise _checkout_http_error(exc)
+
+
+@router.post(
+    "/orders",
+    response_model=StoreOrderDetail,
+    status_code=201,
+    responses={409: {"model": StoreStockConflict}},
+)
 def place_order(payload: StoreOrderIn, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
     try:
         order = store_order.place_store_order(db, user, payload)
         return store_order.get_store_order(db, user, order.id)
-    except store_order.StoreClosed:
-        raise HTTPException(status_code=503, detail="Store is not taking orders right now")
-    except retailer_onboarding.AddressNotFound:
-        raise HTTPException(status_code=404, detail="Address not found")
-    except store_order.UnknownProducts as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Some products are not available", "sku_ids": exc.sku_ids},
-        )
-    except store_order.InvalidCart as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except RetailerAccessError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+    except store_order.StockChanged as exc:
+        body = StoreStockConflict(message=STOCK_CHANGED_MESSAGE, items=exc.items)
+        return JSONResponse(status_code=409, content=body.model_dump())
+    except _CHECKOUT_ERRORS as exc:
+        raise _checkout_http_error(exc)
+
+
+@router.get("/orders", response_model=StoreOrderPage)
+def list_orders(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user=Depends(get_store_retailer),
+    db: Session = Depends(get_db),
+):
+    return store_order.list_store_orders(db, user, limit, offset)
 
 
 @router.get("/orders/{order_id}", response_model=StoreOrderDetail)
