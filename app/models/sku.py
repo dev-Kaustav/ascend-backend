@@ -1,9 +1,14 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Float, Numeric
+from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Float, Numeric
 
 from app.db.base import Base
 
 class SKU(Base):
     __tablename__ = "skus"
+    __table_args__ = (
+        CheckConstraint("pack_type IS NULL OR pack_type IN ('box','case','ladi')", name="ck_skus_pack_type"),
+        CheckConstraint("units_per_pack IS NULL OR units_per_pack > 0", name="ck_skus_units_per_pack_positive"),
+        CheckConstraint("net_weight_g IS NULL OR net_weight_g > 0", name="ck_skus_net_weight_g_positive"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -30,3 +35,17 @@ class SKU(Base):
     length_cm = Column(Float)
     width_cm = Column(Float)
     height_cm = Column(Float)
+
+    # Storefront catalogue data (STORE-07). image_url is https-only (validated at the schema).
+    image_url = Column(String(2048))
+    category_id = Column(
+        Integer,
+        ForeignKey("categories.id", ondelete="SET NULL", name="fk_skus_category_id_categories"),
+        index=True,
+    )
+    # Whole grams; the only pack-size source (D-03).
+    net_weight_g = Column(Integer)
+    # D-02 provision: pack_type (box | case | ladi) and units_per_pack are admin-writable but
+    # not read by ordering this phase.
+    pack_type = Column(String(8))
+    units_per_pack = Column(Integer)

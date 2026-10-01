@@ -8,6 +8,7 @@ from app.services.admin import (
     create_warehouse,
     create_retailer,
     create_sku,
+    create_category,
     update_brand,
     update_retailer,
     update_sku,
@@ -66,6 +67,8 @@ from app.schemas.admin import (
     UserGroupUpdate,
     CompanyProfileUpdate,
     CompanyProfileResponse,
+    CategoryCreate,
+    CategoryResponse,
 )
 from app.schemas.order import OrderListPage
 from app.core.deps import require_admin, require_roles, require_warehouse_manager
@@ -111,6 +114,17 @@ def create_sku_endpoint(
 ):
     try:
         return create_sku(db, sku, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/categories", response_model=CategoryResponse)
+def create_category_endpoint(
+    payload: CategoryCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return create_category(db, payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

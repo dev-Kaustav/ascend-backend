@@ -1,6 +1,7 @@
 from .user import User
 from .employee import Employee
 from .brand import Brand
+from .category import Category
 from .warehouse import Warehouse
 from .retailer import Retailer
 from .sku import SKU

@@ -1,10 +1,44 @@
 import re
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional
 from datetime import datetime, date
 
 from app.models.enums import INDIAN_STATES
+
+
+MAX_URL_LENGTH = 2048
+PACK_TYPES = ("box", "case", "ladi")
+
+
+def validate_https_url(value):
+    """Admin-entered image/icon links are rendered on the public storefront, so only plain
+    https links with a host are stored (T-08-02: no javascript:, data:, http: or relative values).
+    None or blank becomes None."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    if len(value) > MAX_URL_LENGTH or re.search(r"\s", value):
+        raise ValueError("Must be an https:// link.")
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        raise ValueError("Must be an https:// link.")
+    if parts.scheme != "https" or not parts.netloc:
+        raise ValueError("Must be an https:// link.")
+    return value
+
+
+def _normalize_pack_type(value):
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized not in PACK_TYPES:
+        raise ValueError("Pack type must be box, case or ladi.")
+    return normalized
 
 class GroupCreate(BaseModel):
     name: str
@@ -212,6 +246,22 @@ class SKUCreate(BaseModel):
     length_cm: float
     width_cm: float
     height_cm: float
+    # Storefront catalogue data (STORE-07). All optional so existing callers are unaffected.
+    image_url: Optional[str] = None
+    category_id: Optional[int] = None
+    net_weight_g: Optional[int] = Field(default=None, ge=1)
+    pack_type: Optional[str] = None
+    units_per_pack: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, value):
+        return validate_https_url(value)
+
+    @field_validator("pack_type")
+    @classmethod
+    def validate_pack_type(cls, value):
+        return _normalize_pack_type(value)
 
 class SKUResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -236,6 +286,11 @@ class SKUResponse(BaseModel):
     length_cm: Optional[float]
     width_cm: Optional[float]
     height_cm: Optional[float]
+    image_url: Optional[str] = None
+    category_id: Optional[int] = None
+    net_weight_g: Optional[int] = None
+    pack_type: Optional[str] = None
+    units_per_pack: Optional[int] = None
 
 class SKUUpdate(SKUCreate):
     model_config = ConfigDict(extra="ignore")
@@ -259,6 +314,33 @@ class SKUUpdate(SKUCreate):
     length_cm: Optional[float] = None
     width_cm: Optional[float] = None
     height_cm: Optional[float] = None
+
+
+class CategoryCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str = Field(min_length=1, max_length=80)
+    sort_order: int = 0
+    icon_url: Optional[str] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+    @field_validator("icon_url")
+    @classmethod
+    def validate_icon_url(cls, value):
+        return validate_https_url(value)
+
+
+class CategoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    sort_order: int
+    icon_url: Optional[str] = None
 
 
 class InventoryReceiptItem(BaseModel):

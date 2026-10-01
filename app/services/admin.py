@@ -2,6 +2,7 @@ from datetime import datetime, date, timedelta
 from io import BytesIO
 import re
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, load_only, aliased
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -25,6 +26,7 @@ from app.models import (
     Group,
     CompanyProfile,
     PaymentQRImage,
+    Category,
 )
 from app.models.payment_qr_image import digest_image
 from app.schemas.admin import (
@@ -39,6 +41,7 @@ from app.schemas.admin import (
     GroupCreate,
     UserGroupUpdate,
     CompanyProfileUpdate,
+    CategoryCreate,
 )
 from app.models.enums import TransactionType, OrderStatus, EmployeeRole, PaymentStatus
 from app.services.transactions import transactional_session
@@ -85,11 +88,40 @@ def create_sku(db: Session, sku: SKUCreate, current_user=None):
         role_value = getattr(current_user.role, "value", None) or getattr(current_user, "role", None)
         if role_value not in {"ADMIN", "WAREHOUSE_MANAGER"}:
             raise ValueError("Only admins or warehouse managers can create SKUs")
+    _assert_category_exists(db, sku.category_id)
     db_sku = SKU(**sku.dict())
     db.add(db_sku)
     db.commit()
     db.refresh(db_sku)
     return db_sku
+
+def _assert_category_exists(db: Session, category_id):
+    # The FK alone does not catch this under the SQLite test harness (no PRAGMA foreign_keys).
+    if category_id is not None and not db.query(Category).filter(Category.id == category_id).first():
+        raise ValueError("Category not found")
+
+
+def _category_name_taken(db: Session, name: str, exclude_id=None) -> bool:
+    query = db.query(Category.id).filter(func.lower(Category.name) == name.strip().lower())
+    if exclude_id is not None:
+        query = query.filter(Category.id != exclude_id)
+    return query.first() is not None
+
+
+def create_category(db: Session, payload: CategoryCreate):
+    if _category_name_taken(db, payload.name):
+        raise ValueError("Category already exists")
+    category = Category(**payload.model_dump())
+    db.add(category)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Lost a race with a concurrent create of the same name; the unique index caught it.
+        db.rollback()
+        raise ValueError("Category already exists")
+    db.refresh(category)
+    return category
+
 
 class RecordNotFoundError(ValueError):
     """Raised when an update targets an id that does not exist, so the router can answer 404
@@ -140,6 +172,8 @@ def update_sku(db: Session, sku_id: int, payload: SKUUpdate):
     if "brand_id" in data and data["brand_id"] is not None:
         if not db.query(Brand).filter(Brand.id == data["brand_id"]).first():
             raise ValueError("Brand not found")
+    if "category_id" in data:
+        _assert_category_exists(db, data["category_id"])
     return _apply_update(db, sku, payload)
 
 
@@ -872,6 +906,13 @@ def list_skus(db: Session):
                 SKU.length_cm,
                 SKU.width_cm,
                 SKU.height_cm,
+                # Catalogue columns: GET /admin/lookups has no response_model, so any column
+                # left out here silently vanishes from the response.
+                SKU.image_url,
+                SKU.category_id,
+                SKU.net_weight_g,
+                SKU.pack_type,
+                SKU.units_per_pack,
             )
         )
         .order_by(SKU.name.asc())
