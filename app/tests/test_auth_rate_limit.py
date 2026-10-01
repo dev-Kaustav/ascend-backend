@@ -119,3 +119,141 @@ def test_failures_are_logged_without_the_password(client, staff, clock, caplog):
         assert "testclient" in msg
         assert WRONG not in msg
         assert PASSWORD not in msg
+
+
+# --- per-IP ceilings, OTP exchange, purge, logging hygiene (Task 2) -------------------------
+
+OTP_URL = "/auth/retailer/firebase"
+ID_TOKEN = "eyJhbGciOiJSUzI1NiJ9.super-secret-id-token.sig"
+
+
+def _otp_seam(monkeypatch, phone="+919876543210", exc=None):
+    def fake(id_token):
+        if exc is not None:
+            raise exc
+        return phone
+
+    monkeypatch.setattr("app.services.firebase_auth.verify_phone_id_token", fake)
+
+
+def _otp(client):
+    return client.post(OTP_URL, json={"id_token": ID_TOKEN})
+
+
+def test_eleventh_otp_exchange_from_one_ip_is_429_even_with_a_valid_token(client, monkeypatch, clock):
+    from app.services.firebase_auth import InvalidOtpToken
+
+    _otp_seam(monkeypatch, exc=InvalidOtpToken("bad"))
+    for _ in range(10):
+        assert _otp(client).status_code == 401
+    _otp_seam(monkeypatch)  # now a valid +91 number
+    res = _otp(client)
+    assert res.status_code == 429
+    assert res.headers["Retry-After"] == "900"
+    clock.advance(900)
+    assert _otp(client).status_code == 200
+
+
+def test_otp_limit_is_per_ip(client, monkeypatch, clock):
+    from app.services.firebase_auth import InvalidOtpToken
+
+    _otp_seam(monkeypatch, exc=InvalidOtpToken("bad"))
+    for _ in range(10):
+        _otp(client)
+    _otp_seam(monkeypatch)
+    monkeypatch.setattr(rate_limit, "client_ip", lambda request: "203.0.113.9")
+    assert _otp(client).status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["unavailable", "unsupported"])
+def test_503_and_400_are_not_counted_as_failures(client, db, monkeypatch, clock, kind):
+    from app.models.auth_attempt import AuthAttempt
+    from app.services.firebase_auth import OtpVerifierUnavailable
+
+    if kind == "unavailable":
+        _otp_seam(monkeypatch, exc=OtpVerifierUnavailable("down"))
+        expected = 503
+    else:
+        _otp_seam(monkeypatch, phone="+14155550123")
+        expected = 400
+    for _ in range(15):
+        assert _otp(client).status_code == expected
+    assert db.query(AuthAttempt).count() == 0
+    _otp_seam(monkeypatch)
+    assert _otp(client).status_code == 200
+
+
+def test_thirty_failed_logins_from_one_ip_block_the_next_attempt(client, staff, clock):
+    for i in range(30):
+        assert _login(client, email=f"nobody{i}@example.com", password=WRONG).status_code == 400
+    res = _login(client)  # the correct password for a real, unlocked email
+    assert res.status_code == 429
+    assert res.headers["Retry-After"] == "900"
+    assert _login(client, email="another@example.com", password=WRONG).status_code == 429
+
+
+def test_another_ip_can_still_log_in_while_one_email_is_locked(client, staff, clock, monkeypatch):
+    for _ in range(5):
+        _login(client, password=WRONG)
+    assert _login(client).status_code == 429
+    # The per-email cap is not IP-dependent, so the same email stays locked from anywhere...
+    monkeypatch.setattr(rate_limit, "client_ip", lambda request: "198.51.100.7")
+    assert _login(client).status_code == 429
+
+
+def test_a_locked_email_does_not_block_a_different_email_from_another_ip(client, db, staff, clock, monkeypatch):
+    other = User(email="other@example.com", password_hash=get_password_hash("pw-other"), role=EmployeeRole.ADMIN)
+    db.add(other)
+    db.commit()
+    for _ in range(5):
+        _login(client, password=WRONG)
+    monkeypatch.setattr(rate_limit, "client_ip", lambda request: "198.51.100.7")
+    assert _login(client, email="other@example.com", password="pw-other").status_code == 200
+
+
+def test_otp_failure_log_has_ip_but_no_token_or_mobile(client, monkeypatch, clock, caplog):
+    from app.services.firebase_auth import InvalidOtpToken
+
+    _otp_seam(monkeypatch, phone="+919876543210", exc=InvalidOtpToken("bad token for +919876543210"))
+    with caplog.at_level(logging.WARNING, logger="ascend.auth"):
+        _otp(client)
+    records = [r for r in caplog.records if r.name == "ascend.auth" and r.levelno == logging.WARNING]
+    assert len(records) == 1
+    msg = records[0].getMessage()
+    assert "otp_failed" in msg
+    assert "testclient" in msg
+    assert ID_TOKEN not in msg
+    assert "super-secret-id-token" not in msg
+    assert "9876543210" not in msg
+
+
+def test_mask_mobile_keeps_only_the_last_four_digits():
+    assert rate_limit.mask_mobile(9876543210) == "******3210"
+    assert rate_limit.mask_mobile("9876543210") == "******3210"
+
+
+def test_rows_older_than_24_hours_are_purged_on_the_next_failure(db, clock):
+    from app.models.auth_attempt import AuthAttempt
+
+    clock.advance(-25 * 3600)
+    rate_limit.record_failure(db, "login_ip", "old")
+    clock.advance(2 * 3600)  # 23 h before the real "now"
+    rate_limit.record_failure(db, "login_ip", "recent")
+    # The 25 h row was already 2 h old when the 23 h-old row was written; it is not yet past 24 h.
+    assert db.query(AuthAttempt).count() == 2
+    clock.advance(23 * 3600)  # back to T0: old row is 25 h old, recent is 23 h old
+    rate_limit.record_failure(db, "login_ip", "now")
+    keys = sorted(r.key for r in db.query(AuthAttempt).all())
+    assert keys == ["now", "recent"]
+
+
+def test_long_email_does_not_overflow_the_key_column(client, staff, clock):
+    long_email = "a" * 400 + "@example.com"
+    assert _login(client, email=long_email, password=WRONG).status_code == 400
+
+
+def test_log_line_cannot_be_forged_with_newlines_in_the_email(client, staff, clock, caplog):
+    with caplog.at_level(logging.WARNING, logger="ascend.auth"):
+        _login(client, email="x@example.com\nFAKE login_ok", password=WRONG)
+    msg = [r for r in caplog.records if r.name == "ascend.auth"][0].getMessage()
+    assert "\n" not in msg
