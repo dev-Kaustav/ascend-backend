@@ -41,7 +41,9 @@ def _build_address(r: Retailer):
 def lookup_retailers(
     payload: RetailerLookupRequest,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    # Returns other retailers' names, addresses and coordinates, so a retailer's own login (which
+    # anyone with a phone can hold) must not reach it. These are the outlet-finder page's roles.
+    _=Depends(require_roles("ACCOUNTANT", "WAREHOUSE_MANAGER", "SALESMAN", "DRIVER", "BRAND")),
 ):
     deduped = sorted({eid.strip() for eid in payload.external_ids if eid.strip()})
     if not deduped:
@@ -79,11 +81,8 @@ def lookup_retailers(
 def mark_delivered(
     payload: MarkDeliveredRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_user),
+    current_user=Depends(require_roles("ACCOUNTANT", "WAREHOUSE_MANAGER", "SALESMAN", "DRIVER", "BRAND")),
 ):
-    if current_user.role == EmployeeRole.RETAILER:
-        raise HTTPException(status_code=403, detail="Retailers cannot mark deliveries")
-
     if payload.accuracy_m is not None and payload.accuracy_m > DELIVERY_GPS_ACCURACY_MAX_M:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
