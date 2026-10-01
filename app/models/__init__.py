@@ -3,7 +3,7 @@ from .employee import Employee
 from .brand import Brand
 from .category import Category
 from .warehouse import Warehouse
-from .retailer import Retailer
+from .retailer import Retailer, RetailerAddress
 from .sku import SKU
 from .sku_batch import SKUBatch
 from .inventory import Inventory

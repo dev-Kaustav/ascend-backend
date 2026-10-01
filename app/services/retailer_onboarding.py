@@ -8,13 +8,14 @@ rows therefore never match; the audit script reports how many exist.
 import logging
 import re
 import secrets
+from datetime import datetime, timezone
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import get_password_hash
-from app.models import Retailer, User
+from app.models import Retailer, RetailerAddress, User
 from app.models.enums import EmployeeRole
 
 logger = logging.getLogger("ascend.auth")
@@ -109,3 +110,126 @@ def shop_prefill(retailer: Retailer) -> dict:
         "latitude": retailer.latitude,
         "longitude": retailer.longitude,
     }
+
+
+class ShopAddressRequired(ValueError):
+    """A shop submission needs a delivery location the first time (D-26)."""
+
+
+def _apply_address(target, address) -> None:
+    """Copy a submitted address onto a Retailer's registered-address columns."""
+    target.address_line1 = address.line1
+    target.address_line2 = address.line2
+    target.city = address.city
+    target.state = address.state
+    target.pincode = address.pincode
+    target.latitude = address.latitude
+    target.longitude = address.longitude
+
+
+def _new_saved_address(retailer_id: int, address) -> RetailerAddress:
+    return RetailerAddress(
+        retailer_id=retailer_id,
+        label=address.label,
+        line1=address.line1,
+        line2=address.line2,
+        landmark=address.landmark,
+        city=address.city,
+        state=address.state,
+        pincode=address.pincode,
+        latitude=address.latitude,
+        longitude=address.longitude,
+    )
+
+
+def complete_shop(db: Session, user: User, payload) -> User:
+    """Finish onboarding (D-18, D-20, D-26, D-28): one transaction, safe to submit twice.
+
+    The user row is locked and re-read first so two concurrent first submissions cannot both
+    see state "new" and create two shops (a no-op on SQLite, which cannot exercise the race).
+    """
+    locked = (
+        db.query(User).filter(User.id == user.id).populate_existing().with_for_update().one()
+    )
+    state = onboarding_state(locked)
+    now = datetime.now(timezone.utc)
+
+    if state == "new":
+        if payload.address is None:
+            raise ShopAddressRequired()
+        address = payload.address
+        retailer = Retailer(
+            name=payload.shop_name,
+            mobile_number=locked.phone_number,
+            gst_number=payload.gst_number,
+            signup_source="STORE",
+        )
+        _apply_address(retailer, address)
+        db.add(retailer)
+        db.flush()
+        db.add(_new_saved_address(retailer.id, address))
+        locked.retailer_id = retailer.id
+        locked.shop_confirmed_at = now
+    elif state == "confirm":
+        if payload.address is None:
+            raise ShopAddressRequired()
+        address = payload.address
+        retailer = db.get(Retailer, locked.retailer_id)
+        retailer.name = payload.shop_name
+        retailer.gst_number = payload.gst_number
+        _apply_address(retailer, address)
+        has_saved = (
+            db.query(func.count(RetailerAddress.id))
+            .filter(RetailerAddress.retailer_id == retailer.id)
+            .scalar()
+        )
+        if not has_saved:
+            db.add(_new_saved_address(retailer.id, address))
+        locked.shop_confirmed_at = now
+    else:
+        retailer = db.get(Retailer, locked.retailer_id)
+        retailer.name = payload.shop_name
+        if payload.gst_number is not None:
+            retailer.gst_number = payload.gst_number
+
+    db.commit()
+    return locked
+
+
+def build_store_me(db: Session, user: User) -> dict:
+    state = onboarding_state(user)
+    retailer = db.get(Retailer, user.retailer_id) if user.retailer_id is not None else None
+    shop = None
+    prefill = None
+    addresses = []
+    if retailer is not None:
+        if state == "confirm":
+            prefill = shop_prefill(retailer)
+        else:
+            shop = {
+                "retailer_id": retailer.id,
+                "name": retailer.name,
+                "gst_number": retailer.gst_number,
+                "address_line1": retailer.address_line1,
+                "address_line2": retailer.address_line2,
+                "city": retailer.city,
+                "state": retailer.state,
+                "pincode": retailer.pincode,
+            }
+        addresses = list_addresses(db, retailer.id)
+    return {
+        "mobile": user.phone_number,
+        "onboarding": state,
+        "shop": shop,
+        "prefill": prefill,
+        "addresses": addresses,
+    }
+
+
+def list_addresses(db: Session, retailer_id: int) -> list[RetailerAddress]:
+    return (
+        db.query(RetailerAddress)
+        .filter(RetailerAddress.retailer_id == retailer_id)
+        .order_by(RetailerAddress.id.desc())
+        .all()
+    )

@@ -3,10 +3,17 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.core.store_deps import get_optional_retailer
+from app.core.store_deps import get_optional_retailer, get_store_user
 from app.db.session import get_db
-from app.schemas.store import StoreBrand, StoreCategory, StoreProduct, StoreProductPage
-from app.services import store_catalogue
+from app.schemas.store import (
+    StoreBrand,
+    StoreCategory,
+    StoreMe,
+    StoreProduct,
+    StoreProductPage,
+    StoreShopIn,
+)
+from app.services import retailer_onboarding, store_catalogue
 
 router = APIRouter()
 
@@ -65,3 +72,17 @@ def get_product(
         return store_catalogue.get_store_product(db, viewer, product_id)
     except store_catalogue.StoreProductNotFound:
         raise HTTPException(status_code=404, detail="Product not found", headers=VARY)
+
+
+@router.get("/me", response_model=StoreMe)
+def get_me(user=Depends(get_store_user), db: Session = Depends(get_db)):
+    return retailer_onboarding.build_store_me(db, user)
+
+
+@router.put("/me/shop", response_model=StoreMe)
+def put_shop(payload: StoreShopIn, user=Depends(get_store_user), db: Session = Depends(get_db)):
+    try:
+        user = retailer_onboarding.complete_shop(db, user, payload)
+    except retailer_onboarding.ShopAddressRequired:
+        raise HTTPException(status_code=422, detail="A delivery location is required")
+    return retailer_onboarding.build_store_me(db, user)
