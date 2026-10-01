@@ -392,3 +392,172 @@ def test_orders_without_a_charge_total_exactly_as_before(client, db):
     totals = calculate_order_totals(order)
     assert totals["grand_total"] == D("1000.00")
     assert totals["gst_amount"] == D("120.00")
+
+
+# --- Task 2: rupees in the quote and order views, ops totals, never the percentage ---------------------
+
+
+def _quote(client, user, *lines):
+    response = client.post(
+        "/store/cart/quote",
+        json={"items": [{"sku_id": sku.id, "quantity": quantity} for sku, quantity in lines]},
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_quote_shows_the_charge_the_threshold_and_the_total_in_rupees(client, db):
+    catalogue = _catalogue(db)
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, _ = ready_retailer(db)
+
+    quote = _quote(client, user, (sku, 25))
+
+    assert quote["subtotal"] == 450.0
+    assert quote["delivery_charge"] == 36.0
+    assert quote["free_delivery_above"] == 1000.0
+    assert quote["total"] == 486.0
+
+
+def test_quote_at_or_above_the_minimum_has_no_charge(client, db):
+    catalogue = _catalogue(db)
+    sku = _sku(db, catalogue, mrp="100", amount="100")
+    user, _, _ = ready_retailer(db)
+
+    quote = _quote(client, user, (sku, 12))
+
+    assert quote["delivery_charge"] == 0.0
+    assert quote["total"] == quote["subtotal"] == 1200.0
+    assert quote["free_delivery_above"] == 1000.0
+
+
+def test_quote_with_a_zero_minimum_has_no_threshold_and_no_charge(client, db):
+    catalogue = _catalogue(db, minimum="0")
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, _ = ready_retailer(db)
+
+    quote = _quote(client, user, (sku, 1))
+
+    assert quote["free_delivery_above"] is None
+    assert quote["delivery_charge"] == 0.0
+    assert quote["total"] == 18.0
+
+
+def test_an_empty_quote_is_a_422(client, db):
+    _catalogue(db)
+    user, _, _ = ready_retailer(db)
+
+    response = client.post("/store/cart/quote", json={"items": []}, headers=auth_headers(user))
+
+    assert response.status_code == 422
+
+
+def test_the_placed_orders_total_equals_the_quote_and_the_views_show_the_charge(client, db):
+    catalogue = _catalogue(db)
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, address = ready_retailer(db)
+
+    quote = _quote(client, user, (sku, 25))
+    order_id = _place(client, user, address, (sku, 25))
+    order = _order(db, order_id)
+    assert float(calculate_order_totals(order)["grand_total"]) == quote["total"] == 486.0
+
+    detail = client.get(f"/store/orders/{order_id}", headers=auth_headers(user)).json()
+    assert detail["delivery_charge"] == 36.0
+    assert detail["subtotal"] == 450.0
+    assert detail["total"] == 486.0
+
+    listing = client.get("/store/orders", headers=auth_headers(user)).json()
+    row = next(item for item in listing["items"] if item["id"] == order_id)
+    assert row["total"] == 486.0
+    assert row["delivery_charge"] == 36.0
+
+
+def test_a_multi_rate_quote_equals_the_placed_order_total(client, db):
+    catalogue = _catalogue(db)
+    low = _sku(db, catalogue, mrp="100", amount="100", gst=5)
+    high = _sku(db, catalogue, mrp="100", amount="100", gst=12)
+    user, _, address = ready_retailer(db)
+
+    quote = _quote(client, user, (low, 2), (high, 2))
+    order = _order(db, _place(client, user, address, (low, 2), (high, 2)))
+
+    assert quote["delivery_charge"] == 32.0
+    assert float(calculate_order_totals(order)["grand_total"]) == quote["total"] == 432.0
+
+
+def _keys(value):
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield key
+            yield from _keys(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from _keys(inner)
+
+
+def test_no_store_response_reveals_the_delivery_percentage(client, db):
+    catalogue = _catalogue(db, percent="8")
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, address = ready_retailer(db)
+    headers = auth_headers(user)
+    order_id = _place(client, user, address, (sku, 25))
+
+    responses = [
+        client.post("/store/cart/quote", json={"items": [{"sku_id": sku.id, "quantity": 25}]}, headers=headers),
+        client.get(f"/store/orders/{order_id}", headers=headers),
+        client.get("/store/orders", headers=headers),
+        client.get("/store/me", headers=headers),
+        client.get("/store/products", headers=headers),
+        client.get(f"/store/products/{sku.id}", headers=headers),
+        client.get("/store/categories", headers=headers),
+    ]
+    for response in responses:
+        assert response.status_code == 200, response.text
+        assert not [k for k in _keys(response.json()) if "percent" in k.lower()], response.text
+        assert "8%" not in response.text and "8.0%" not in response.text and "8.00%" not in response.text
+
+
+# --- ops totals ----------------------------------------------------------------------------------------
+
+
+def _admin(db):
+    from app.tests.store_helpers import make_user
+
+    return make_user(db, EmployeeRole.ADMIN)
+
+
+def test_ops_order_list_detail_and_summary_include_the_charge(client, db):
+    catalogue = _catalogue(db)
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, address = ready_retailer(db)
+    order_id = _place(client, user, address, (sku, 25))
+    admin = _admin(db)
+
+    listing = client.get("/orders", headers=auth_headers(admin)).json()
+    row = next(item for item in listing["items"] if item["id"] == order_id)
+    assert row["total_amount"] == 486.0
+    assert row["pending_amount"] == 486.0
+
+    detail = client.get(f"/orders/{order_id}", headers=auth_headers(admin)).json()
+    assert detail["delivery_charge"] == 36.0
+    assert detail["grand_total"] == 486.0
+    assert detail["total_amount"] == 486.0
+
+    summary = client.get("/admin/summary", headers=auth_headers(admin)).json()
+    assert summary["orders"]["revenue"] == 486.0
+    assert summary["orders"]["outstanding"] == 486.0
+
+
+def test_an_order_without_a_charge_reports_zero_delivery_in_the_ops_detail(client, db):
+    catalogue = _catalogue(db, minimum="0")
+    sku = _sku(db, catalogue, mrp="22.5", amount="18.0")
+    user, _, address = ready_retailer(db)
+    order_id = _place(client, user, address, (sku, 2))
+    admin = _admin(db)
+
+    detail = client.get(f"/orders/{order_id}", headers=auth_headers(admin)).json()
+
+    assert detail["delivery_charge"] == 0.0
+    assert detail["grand_total"] == 36.0
