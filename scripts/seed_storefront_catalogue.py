@@ -204,6 +204,24 @@ def run(session, rows, *, apply):
     return report
 
 
+def verify(session):
+    """Jabsons-brand SKUs still lacking an image, a category or a pack size (criterion 1).
+    The range is identified by brand name (starts with 'Jabsons', case-insensitive)."""
+    gaps = []
+    skus = (
+        session.query(SKU)
+        .join(Brand, SKU.brand_id == Brand.id)
+        .filter(func.lower(Brand.name).like(JABSONS_BRAND_PREFIX + "%"))
+        .order_by(SKU.id)
+        .all()
+    )
+    for sku in skus:
+        missing = [name for name in CATALOGUE_FIELDS if getattr(sku, name) is None]
+        if missing:
+            gaps.append({"id": sku.id, "code": sku.code, "name": sku.name, "missing": missing})
+    return gaps
+
+
 def _print_report(report, *, apply):
     verb = "Filled" if apply else "Would fill"
     print(f"{verb} {len(report.updated)} SKU(s); categories {'created' if apply else 'to create'}: {len(report.created_categories)}")
@@ -236,12 +254,35 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Merchant feed CSV (default: jabsons_products.csv beside this script)")
     parser.add_argument("--apply", action="store_true", help="Actually write. Without this the script only reports what would change.")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Only check: list Jabsons SKUs lacking image, category or pack size; exit 1 if any. Never writes.",
+    )
     parser.add_argument("--database-url", help="Overrides the DATABASE_URL environment variable")
     args = parser.parse_args(argv)
+    if args.verify and args.apply:
+        parser.error("--verify only checks; it cannot be combined with --apply.")
 
     database_url = args.database_url or os.getenv("DATABASE_URL")
     if not database_url:
         raise SystemExit("DATABASE_URL is required (env var or --database-url).")
+
+    if args.verify:
+        print(f"[VERIFY] target: {_safe_url(database_url)}\n")
+        engine = create_engine(database_url)
+        session = sessionmaker(bind=engine)()
+        try:
+            gaps = verify(session)
+        finally:
+            session.close()
+        if not gaps:
+            print("All Jabsons SKUs have an image, a category and a pack size.")
+            return 0
+        print(f"{len(gaps)} Jabsons SKU(s) incomplete:")
+        for gap in gaps:
+            print(f"  {gap['code']} (id {gap['id']}, {gap['name']}): missing {', '.join(gap['missing'])}")
+        return 1
 
     rows = load_rows(args.csv)
     print(f"[{'APPLY' if args.apply else 'DRY RUN'}] target: {_safe_url(database_url)}\n")
