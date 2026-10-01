@@ -9,6 +9,8 @@ from app.services.admin import (
     create_retailer,
     create_sku,
     create_category,
+    list_categories,
+    update_category,
     update_brand,
     update_retailer,
     update_sku,
@@ -68,6 +70,7 @@ from app.schemas.admin import (
     CompanyProfileUpdate,
     CompanyProfileResponse,
     CategoryCreate,
+    CategoryUpdate,
     CategoryResponse,
 )
 from app.schemas.order import OrderListPage
@@ -125,6 +128,24 @@ def create_category_endpoint(
 ):
     try:
         return create_category(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/categories", response_model=list[CategoryResponse])
+def list_categories_endpoint(db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    return list_categories(db)
+
+@router.patch("/categories/{category_id}", response_model=CategoryResponse)
+def update_category_endpoint(
+    category_id: int,
+    payload: CategoryUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin),
+):
+    try:
+        return update_category(db, category_id, payload)
+    except RecordNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

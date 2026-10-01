@@ -335,6 +335,34 @@ class CategoryCreate(BaseModel):
         return validate_https_url(value)
 
 
+class CategoryUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    # An omitted key leaves the column alone; an explicit null name is rejected (a category
+    # always has a name), while an explicit null icon_url clears the icon.
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    sort_order: Optional[int] = None
+    icon_url: Optional[str] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+    @field_validator("name", "sort_order")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("This field cannot be null.")
+        return value
+
+    @field_validator("icon_url")
+    @classmethod
+    def validate_icon_url(cls, value):
+        return validate_https_url(value)
+
+
 class CategoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

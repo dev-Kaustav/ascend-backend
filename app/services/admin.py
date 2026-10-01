@@ -42,6 +42,7 @@ from app.schemas.admin import (
     UserGroupUpdate,
     CompanyProfileUpdate,
     CategoryCreate,
+    CategoryUpdate,
 )
 from app.models.enums import TransactionType, OrderStatus, EmployeeRole, PaymentStatus
 from app.services.transactions import transactional_session
@@ -123,6 +124,11 @@ def create_category(db: Session, payload: CategoryCreate):
     return category
 
 
+def list_categories(db: Session):
+    # id as the tiebreaker keeps categories sharing a sort_order in a stable order across calls.
+    return db.query(Category).order_by(Category.sort_order.asc(), Category.id.asc()).all()
+
+
 class RecordNotFoundError(ValueError):
     """Raised when an update targets an id that does not exist, so the router can answer 404
     rather than the 400 every other ValueError from this module means."""
@@ -175,6 +181,20 @@ def update_sku(db: Session, sku_id: int, payload: SKUUpdate):
     if "category_id" in data:
         _assert_category_exists(db, data["category_id"])
     return _apply_update(db, sku, payload)
+
+
+def update_category(db: Session, category_id: int, payload: CategoryUpdate):
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise RecordNotFoundError("Category not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "name" in data and _category_name_taken(db, data["name"], exclude_id=category_id):
+        raise ValueError("Category already exists")
+    try:
+        return _apply_update(db, category, payload)
+    except IntegrityError:
+        db.rollback()
+        raise ValueError("Category already exists")
 
 
 def get_company_profile(db: Session):
