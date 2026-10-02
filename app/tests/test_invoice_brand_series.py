@@ -1,8 +1,4 @@
-"""Tests for the per-brand invoice series: ASC0001 became ASC/JAB/0001.
-
-Each brand runs its own consecutive 0001, 0002... series; the brand code is the first
-three alphanumerics of the brand name.
-"""
+"""Per-brand, per-channel invoice series with five-digit consecutive serials."""
 import itertools
 
 import pytest
@@ -43,7 +39,7 @@ def _seed_brand(db, brand_name):
     return warehouse, retailer, sku, driver, user
 
 
-def _dispatch_order(db, warehouse, retailer, skus, driver, user, quantity=2):
+def _dispatch_order(db, warehouse, retailer, skus, driver, user, quantity=2, dispatcher=None):
     order = create_outgoing_order(
         db,
         OrderCreate(
@@ -56,8 +52,8 @@ def _dispatch_order(db, warehouse, retailer, skus, driver, user, quantity=2):
     )
     order.delivery_driver_id = driver.id
     db.commit()
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), user)
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
+    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), dispatcher or user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), dispatcher or user)
     db.refresh(order)
     return order
 
@@ -86,8 +82,8 @@ def test_invoice_number_carries_the_brand_code(db):
     warehouse, retailer, sku, driver, user = _seed_brand(db, "Jabsons Foods")
     order = _dispatch_order(db, warehouse, retailer, [sku], driver, user)
 
-    assert order.invoice.invoice_number == "ASC/JAB/0001"
-    assert order.invoice.invoice_series == "JAB"
+    assert order.invoice.invoice_number == "ASC/JAB/OF/00001"
+    assert order.invoice.invoice_series == "JAB/OF"
     assert order.invoice.invoice_serial == 1
 
 
@@ -97,7 +93,7 @@ def test_serial_is_consecutive_within_a_brand(db):
         _dispatch_order(db, warehouse, retailer, [sku], driver, user).invoice.invoice_number
         for _ in range(3)
     ]
-    assert numbers == ["ASC/JAB/0001", "ASC/JAB/0002", "ASC/JAB/0003"]
+    assert numbers == ["ASC/JAB/OF/00001", "ASC/JAB/OF/00002", "ASC/JAB/OF/00003"]
 
 
 def test_each_brand_counts_from_one_independently(db):
@@ -108,9 +104,9 @@ def test_each_brand_counts_from_one_independently(db):
     first_b = _dispatch_order(db, wh_b, ret_b, [sku_b], drv_b, user_b)
     second_a = _dispatch_order(db, wh_a, ret_a, [sku_a], drv_a, user_a)
 
-    assert first_a.invoice.invoice_number == "ASC/JAB/0001"
-    assert first_b.invoice.invoice_number == "ASC/KAL/0001"
-    assert second_a.invoice.invoice_number == "ASC/JAB/0002"
+    assert first_a.invoice.invoice_number == "ASC/JAB/OF/00001"
+    assert first_b.invoice.invoice_number == "ASC/KAL/OF/00001"
+    assert second_a.invoice.invoice_number == "ASC/JAB/OF/00002"
 
 
 def test_brands_sharing_a_code_share_a_series_rather_than_colliding(db):
@@ -122,8 +118,8 @@ def test_brands_sharing_a_code_share_a_series_rather_than_colliding(db):
     first = _dispatch_order(db, wh_a, ret_a, [sku_a], drv_a, user_a)
     second = _dispatch_order(db, wh_b, ret_b, [sku_b], drv_b, user_b)
 
-    assert first.invoice.invoice_number == "ASC/JAB/0001"
-    assert second.invoice.invoice_number == "ASC/JAB/0002"
+    assert first.invoice.invoice_number == "ASC/JAB/OF/00001"
+    assert second.invoice.invoice_number == "ASC/JAB/OF/00002"
 
 
 def test_mixed_brand_order_is_refused_rather_than_mislabelled(db):
@@ -163,8 +159,46 @@ def test_externally_numbered_import_consumes_no_serial(db):
     """The historical-import path assigns its own number; it must not advance a series."""
     warehouse, retailer, sku, driver, user = _seed_brand(db, "Jabsons")
     order = _dispatch_order(db, warehouse, retailer, [sku], driver, user)
-    assert order.invoice.invoice_number == "ASC/JAB/0001"
+    assert order.invoice.invoice_number == "ASC/JAB/OF/00001"
 
     # Next allocation in the series is 2 — the import below must leave it there.
-    assert next_invoice_number(db, "JAB") == ("ASC/JAB/0002", 2)
-    assert next_invoice_number(db, "JAB") == ("ASC/JAB/0003", 3)
+    assert next_invoice_number(db, "JAB/OF") == ("ASC/JAB/OF/00002", 2)
+    assert next_invoice_number(db, "JAB/OF") == ("ASC/JAB/OF/00003", 3)
+
+
+def test_online_and_offline_have_independent_five_digit_series(db):
+    from app.tests.store_helpers import ready_retailer
+
+    warehouse, retailer, sku, driver, admin = _seed_brand(db, "Jabsons")
+    retailer_user, online_retailer, _ = ready_retailer(db)
+    offline = _dispatch_order(db, warehouse, retailer, [sku], driver, admin)
+    online = _dispatch_order(db, warehouse, online_retailer, [sku], driver, retailer_user, dispatcher=admin)
+    second_offline = _dispatch_order(db, warehouse, retailer, [sku], driver, admin)
+
+    assert offline.channel == "OFFLINE"
+    assert online.channel == "ONLINE"
+    assert offline.invoice.invoice_number == "ASC/JAB/OF/00001"
+    assert online.invoice.invoice_number == "ASC/JAB/ON/00001"
+    assert online.invoice.invoice_series == "JAB/ON"
+    assert len(online.invoice.invoice_number) == 16
+    assert second_offline.invoice.invoice_number == "ASC/JAB/OF/00002"
+    assert issue_invoice_for_order(db, online).invoice_number == "ASC/JAB/ON/00001"
+
+
+def test_existing_invoice_number_is_preserved_and_consumes_no_channel_serial(db):
+    warehouse, retailer, sku, _, admin = _seed_brand(db, "Jabsons")
+    order = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=2, unit_price=100)],
+        ),
+        admin,
+    )
+    historical = issue_invoice_for_order(db, order, invoice_number="ASC/JAB/0042")
+    db.commit()
+
+    assert issue_invoice_for_order(db, order).invoice_number == "ASC/JAB/0042"
+    assert historical.invoice_serial is None
+    assert next_invoice_number(db, "JAB/OF") == ("ASC/JAB/OF/00001", 1)

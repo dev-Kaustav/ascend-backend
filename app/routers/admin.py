@@ -1,3 +1,4 @@
+from typing import Literal
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
@@ -227,6 +228,7 @@ def get_orders_endpoint(
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
     has_invoice: bool | None = Query(None),
+    channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
 ):
     items, total = get_orders_page(
         db,
@@ -239,6 +241,7 @@ def get_orders_endpoint(
         from_date=from_date,
         to_date=to_date,
         has_invoice=has_invoice,
+        channel=channel,
     )
     return {"items": items, "total": total}
 
@@ -252,6 +255,7 @@ def export_orders_endpoint(
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
     has_invoice: bool | None = Query(None),
+    channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
 ):
     output = export_orders_excel(
         db,
@@ -261,6 +265,7 @@ def export_orders_endpoint(
         from_date=from_date,
         to_date=to_date,
         has_invoice=has_invoice,
+        channel=channel,
     )
     filename = f"orders_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}

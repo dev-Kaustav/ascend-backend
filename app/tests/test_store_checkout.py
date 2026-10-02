@@ -70,6 +70,7 @@ def test_ready_retailer_places_a_server_priced_order_to_a_saved_address(client, 
     assert order.to_entity_type == "RETAILER" and order.to_entity_id == retailer.id
     assert order.from_entity_type == "WAREHOUSE" and order.from_entity_id == warehouse.id
     assert order.status == OrderStatus.PENDING
+    assert order.channel == "ONLINE"
     assert order.salesman_id is None
 
     (item,) = db.query(OrderItem).all()

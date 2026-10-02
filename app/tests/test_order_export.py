@@ -92,6 +92,7 @@ def test_workbook_has_autofilter_and_formats_aligned_to_headers(db):
         "Created At",
         "Order Date",
         "Order ID",
+        "Channel",
         "Invoice Number",
         "Customer Name ( Retailer Name)",
         "Retailer ID",
@@ -116,3 +117,36 @@ def test_workbook_has_autofilter_and_formats_aligned_to_headers(db):
     for header in ("SKU Quantity", "MRP", "Discount %", "Amount", "Rate"):
         assert sheet.cell(row=2, column=col[header]).number_format == "0.00"
     assert sheet.cell(row=2, column=col["Invoice Number"]).value == order.invoice.invoice_number
+
+
+def test_channel_filter_matches_list_and_excel_export(client, db):
+    from app.services.admin import get_orders_page
+    from app.tests.store_helpers import auth_headers, ready_retailer
+
+    warehouse, retailer, sku, _, admin = _seed_world(db)
+    offline = _place_order(db, warehouse, retailer, sku, admin, 2)
+    retailer_user, online_retailer, _ = ready_retailer(db)
+    online = _place_order(db, warehouse, online_retailer, sku, retailer_user, 2)
+
+    for channel, expected in [("ONLINE", online), ("OFFLINE", offline)]:
+        items, total = get_orders_page(db, admin, channel=channel)
+        assert total == 1
+        assert [order.id for order in items] == [expected.id]
+        for endpoint in ["/orders", "/admin/orders"]:
+            response = client.get(endpoint, params={"channel": channel}, headers=auth_headers(admin))
+            assert response.status_code == 200, response.text
+            assert response.json()["total"] == 1
+            assert response.json()["items"][0]["channel"] == channel
+        detail = client.get(f"/orders/{expected.id}", headers=auth_headers(admin))
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["channel"] == channel
+        rows = get_order_export_rows(db, channel=channel)
+        assert [row["Order ID"] for row in rows] == [expected.id]
+        assert rows[0]["Channel"] == channel.title()
+        sheet = load_workbook(export_orders_excel(db, channel=channel)).active
+        assert sheet.max_row == 2
+        headers = [cell.value for cell in sheet[1]]
+        assert sheet.cell(2, headers.index("Channel") + 1).value == channel.title()
+
+    response = client.get("/admin/orders", params={"channel": "INVALID"}, headers=auth_headers(admin))
+    assert response.status_code == 422

@@ -84,6 +84,7 @@ class OrderResponse(BaseModel):
     to_entity_id: int
     status: str
     invoice_number: Optional[str]
+    channel: str = "OFFLINE"
     salesman_id: Optional[int]
     delivery_driver_id: Optional[int] = None
     delivery_date: Optional[datetime] = None
@@ -137,6 +138,7 @@ class OrderListResponse(BaseModel):
     to_entity_id: int
     status: str
     invoice_number: Optional[str]
+    channel: str = "OFFLINE"
     salesman_id: Optional[int]
     delivery_driver_id: Optional[int] = None
     payment_status: Optional[str]

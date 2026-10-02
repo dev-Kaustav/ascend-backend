@@ -1,3 +1,4 @@
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ def list_orders(
     status: str | None = Query(None),
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
+    channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
 ):
     try:
         items, total = get_orders_page(
@@ -31,6 +33,7 @@ def list_orders(
             status=status,
             from_date=from_date,
             to_date=to_date,
+            channel=channel,
         )
     except OrderScopeError as e:
         raise HTTPException(status_code=403, detail=str(e))

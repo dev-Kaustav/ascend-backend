@@ -373,7 +373,7 @@ def test_serialized_shape_is_stable(db):
 
     expected_keys = {
         "id", "from_entity_type", "from_entity_id", "to_entity_type", "to_entity_id",
-        "status", "invoice_number", "beat_id", "beat_name", "salesman_id",
+        "status", "invoice_number", "channel", "beat_id", "beat_name", "salesman_id",
         "delivery_driver_id", "delivery_date", "panel_status", "issue_category",
         "description", "payment_status", "items", "warehouse_name", "warehouse_state",
         "retailer_name", "retailer_address_line1", "retailer_city", "retailer_state",

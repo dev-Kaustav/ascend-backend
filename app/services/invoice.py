@@ -35,7 +35,7 @@ _KNOWN_TAX_PREFIXES = {"CGST": "cgst", "SGST": "sgst", "IGST": "igst", "CESS": "
 class MultiBrandInvoiceError(Exception):
     """Raised when an order's lines span more than one brand.
 
-    The invoice number carries a single brand code (ASC/JAB/0001), so a mixed-brand
+    The invoice number carries a single brand code (ASC/JAB/ON/00001), so a mixed-brand
     order has no correct number to issue. Ascend's orders are single-brand in practice;
     this surfaces the case loudly at dispatch rather than stamping an arbitrary brand
     onto a legal tax record that can never be corrected (invoices are immutable, D-01).
@@ -148,7 +148,7 @@ def _get_or_create_company_profile(db: Session) -> CompanyProfile:
 
 
 def next_invoice_number(db: Session, series_code: str) -> tuple[str, int]:
-    """Return (formatted_number, serial) for one brand series, e.g. ("ASC/JAB/0001", 1).
+    """Return (formatted_number, serial) for one brand series, e.g. ("ASC/JAB/ON/00001", 1).
 
     Does not read or write the old read-modify-write counter column on company_profile —
     that column was dropped in plan 02-03's migration 0046 (D-04); this function never
@@ -157,7 +157,7 @@ def next_invoice_number(db: Session, series_code: str) -> tuple[str, int]:
     profile = _get_or_create_company_profile(db)
     prefix = (profile.invoice_prefix or "ASC").strip().upper() or "ASC"
     serial = _next_series_serial(db, series_code)
-    return f"{prefix}/{series_code}/{serial:04d}", serial
+    return f"{prefix}/{series_code}/{serial:05d}", serial
 
 
 def _tax_components_for_item(item, gst_amount: Decimal) -> dict[str, Decimal]:
@@ -361,7 +361,8 @@ def issue_invoice_for_order(
         invoice.invoice_number = invoice_number
         invoice.invoice_serial = None
     else:
-        series_code = _order_series_code(db, order)
+        # The channel segment makes online and offline invoices separate series: ASC/JAB/ON/00001.
+        series_code = f"{_order_series_code(db, order)}/{'ON' if order.channel == 'ONLINE' else 'OF'}"
         number, serial = next_invoice_number(db, series_code)
         invoice.invoice_number = number
         invoice.invoice_series = series_code

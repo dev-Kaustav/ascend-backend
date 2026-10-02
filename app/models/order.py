@@ -10,6 +10,7 @@ class Order(Base):
     __table_args__ = (
         state_check_constraint("orders", column="ship_to_state"),
         CheckConstraint("delivery_charge >= 0", name="ck_orders_delivery_charge_nonnegative"),
+        CheckConstraint("channel IN ('ONLINE', 'OFFLINE')", name="ck_orders_channel"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -27,6 +28,10 @@ class Order(Base):
     issue_category = Column(Enum(IssueCategory, name="issue_category"), nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # ONLINE: placed by a retailer on the storefront. OFFLINE: booked by staff (salesman, admin,
+    # imports). It picks the /ON or /OF segment of the invoice number at dispatch.
+    channel = Column(String(8), nullable=False, server_default="OFFLINE", default="OFFLINE")
 
     # 08-09 / D-29: the delivery address a storefront order was placed to, copied at order time.
     # The ship_to_* columns are a snapshot: editing or deleting the saved address afterwards must

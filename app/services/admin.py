@@ -447,7 +447,10 @@ def _apply_order_filters(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
+    channel: str | None = None,
 ):
+    if channel in ("ONLINE", "OFFLINE"):
+        query = query.filter(Order.channel == channel)
     if status:
         try:
             query = query.filter(Order.status == OrderStatus(status))
@@ -505,6 +508,7 @@ def get_orders_page(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
+    channel: str | None = None,
 ):
     query = scoped_orders_query(db, current_user)
     query = _apply_order_filters(
@@ -515,6 +519,7 @@ def get_orders_page(
         from_date=from_date,
         to_date=to_date,
         has_invoice=has_invoice,
+        channel=channel,
     )
 
     total = query.count()
@@ -600,6 +605,7 @@ def get_order_export_rows(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
+    channel: str | None = None,
 ):
     order_salesman = aliased(Employee)
     retailer_salesman = aliased(Employee)
@@ -621,6 +627,7 @@ def get_order_export_rows(
         from_date=from_date,
         to_date=to_date,
         has_invoice=has_invoice,
+        channel=channel,
     )
     query = query.order_by(Order.created_at.desc(), Order.id.desc(), OrderItem.id.asc())
 
@@ -639,6 +646,7 @@ def get_order_export_rows(
                 "Created At": created_at,
                 "Order Date": order_date,
                 "Order ID": order.id,
+                "Channel": "Online" if order.channel == "ONLINE" else "Offline",
                 "Invoice Number": invoice.invoice_number if invoice else None,
                 "Customer Name ( Retailer Name)": retailer.name,
                 "Retailer ID": retailer.id,
@@ -662,6 +670,7 @@ def export_orders_excel(
     from_date: str | None = None,
     to_date: str | None = None,
     has_invoice: bool | None = None,
+    channel: str | None = None,
 ) -> BytesIO:
     rows = get_order_export_rows(
         db,
@@ -671,12 +680,14 @@ def export_orders_excel(
         from_date=from_date,
         to_date=to_date,
         has_invoice=has_invoice,
+        channel=channel,
     )
 
     headers = [
         "Created At",
         "Order Date",
         "Order ID",
+        "Channel",
         "Invoice Number",
         "Customer Name ( Retailer Name)",
         "Retailer ID",

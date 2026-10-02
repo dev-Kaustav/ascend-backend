@@ -556,6 +556,7 @@ def create_outgoing_order(
     order with no snapshot and no charge, as before."""
     role_value = get_role_value(current_user)
     salesman_id = None
+    channel = "ONLINE" if role_value == "RETAILER" else "OFFLINE"
     if role_value == "SALESMAN":
         if not current_user.employee_id:
             raise RetailerAccessError("Salesman missing employee record")
@@ -596,6 +597,7 @@ def create_outgoing_order(
             to_entity_type="RETAILER",
             to_entity_id=order.retailer_id,
             salesman_id=salesman_id,
+            channel=channel,
             status=OrderStatus.PENDING,
             payment_status=PaymentStatus.CREDIT,
         )
@@ -884,6 +886,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "to_entity_id": order.to_entity_id,
         "status": order.status.value if hasattr(order.status, "value") else order.status,
         "invoice_number": order.invoice_number,
+        "channel": order.channel,
         "beat_id": order.beat_id,
         "beat_name": beat.name if beat else None,
         "salesman_id": order.salesman_id,
