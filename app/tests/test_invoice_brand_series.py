@@ -202,3 +202,29 @@ def test_existing_invoice_number_is_preserved_and_consumes_no_channel_serial(db)
     assert issue_invoice_for_order(db, order).invoice_number == "ASC/JAB/0042"
     assert historical.invoice_serial is None
     assert next_invoice_number(db, "JAB/OF") == ("ASC/JAB/OF/00001", 1)
+
+
+def test_online_orders_use_their_own_on_series(db):
+    warehouse, retailer, sku, driver, user = _seed_brand(db, "Jabsons")
+    offline = _dispatch_order(db, warehouse, retailer, [sku], driver, user)
+    assert offline.channel == "OFFLINE"
+
+    online = create_outgoing_order(
+        db,
+        OrderCreate(
+            retailer_id=retailer.id,
+            warehouse_id=warehouse.id,
+            items=[OrderItemCreate(sku_id=sku.id, quantity=2, unit_price=100, discount_amount=0)],
+        ),
+        user,
+    )
+    online.channel = "ONLINE"
+    online.delivery_driver_id = driver.id
+    db.commit()
+    update_order_status(db, online.id, StatusUpdate(status="READY_TO_SHIP"), user)
+    update_order_status(db, online.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
+    db.refresh(online)
+
+    assert online.invoice.invoice_number == "ASC/JAB/ON/00001"
+    assert online.invoice.invoice_series == "JAB/ON"
+    assert offline.invoice.invoice_number == "ASC/JAB/OF/00001"
