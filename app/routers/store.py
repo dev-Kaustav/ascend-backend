@@ -29,8 +29,8 @@ from app.services.order import RetailerAccessError
 
 router = APIRouter()
 
-# The body depends on the bearer token (a retailer also sees trade_price and max_orderable), so no
-# shared cache may serve one viewer's response to another.
+# A bad bearer token is a 401 on these routes, so no shared cache may serve one viewer's response
+# to another.
 VARY = {"Vary": "Authorization"}
 
 
@@ -67,7 +67,7 @@ def list_products(
 ):
     response.headers["Vary"] = "Authorization"
     items, total = store_catalogue.list_store_products(
-        db, viewer, category_id=category_id, brand_id=brand_id, q=q, limit=limit, offset=offset
+        db, category_id=category_id, brand_id=brand_id, q=q, limit=limit, offset=offset
     )
     return {"items": items, "total": total}
 
@@ -81,7 +81,7 @@ def get_product(
 ):
     response.headers["Vary"] = "Authorization"
     try:
-        return store_catalogue.get_store_product(db, viewer, product_id)
+        return store_catalogue.get_store_product(db, product_id)
     except store_catalogue.StoreProductNotFound:
         raise HTTPException(status_code=404, detail="Product not found", headers=VARY)
 
@@ -170,7 +170,8 @@ _CHECKOUT_ERRORS = (
 
 
 @router.post("/cart/quote", response_model=StoreQuote)
-def quote_cart(payload: StoreCartIn, user=Depends(get_store_retailer), db: Session = Depends(get_db)):
+def quote_cart(payload: StoreCartIn, user=Depends(get_optional_retailer), db: Session = Depends(get_db)):
+    # Guests and unfinished shops price a cart too; login and shop details come at Place order.
     try:
         return store_order.quote_cart(db, user, payload)
     except _CHECKOUT_ERRORS as exc:

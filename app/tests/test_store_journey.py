@@ -64,13 +64,13 @@ def test_the_whole_store_journey(client, db, monkeypatch):
         qty=50,
     )
 
-    # --- criterion 2: anonymous browsing shows the MRP and availability, never trade pricing ---
+    # --- criterion 2: anonymous browsing shows MRP, trade price and availability, never a stock count ---
     anonymous = client.get("/store/products")
     assert anonymous.status_code == 200
     (listed,) = anonymous.json()["items"]
     assert listed["id"] == sku.id and listed["brand"]["name"] == "Jabsons"
     assert listed["mrp"] == 22.5 and listed["in_stock"] is True
-    assert "trade_price" not in listed and "max_orderable" not in listed
+    assert listed["trade_price"] == 18.0 and "max_orderable" not in listed
 
     # --- criterion 6: OTP sign-in of a brand-new number, then a shop name and one location ------
     monkeypatch.setattr("app.services.firebase_auth.verify_phone_id_token", lambda _token: PHONE)
@@ -86,10 +86,8 @@ def test_the_whole_store_journey(client, db, monkeypatch):
     assert ready.json()["onboarding"] == "ready"
     address_id = ready.json()["addresses"][0]["id"]
 
-    # --- the signed-in retailer now also sees trade price and the orderable cap -----
-    priced = client.get("/store/products", headers=headers).json()["items"][0]
-    assert priced["trade_price"] == 18.0
-    assert priced["max_orderable"] == 50
+    # --- the signed-in retailer sees the same product shape -----
+    assert client.get("/store/products", headers=headers).json()["items"][0] == listed
 
     # --- criterion 7: a cart below the minimum carries a rupee delivery charge, no percentage ----
     cart = {"items": [{"sku_id": sku.id, "quantity": 2}]}

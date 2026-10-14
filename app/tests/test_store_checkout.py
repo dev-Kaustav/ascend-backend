@@ -635,3 +635,17 @@ def test_ladi_skus_take_whole_ladis_only_and_cap_stock_to_whole_ladis(client, db
 
     placed = client.post("/store/orders", json=_order_body(sku, address, 24), headers=headers)
     assert placed.status_code == 201, placed.text
+
+
+def test_a_guest_prices_a_cart_but_cannot_place_it(client, db):
+    _, _, _, sku = _store(db)
+    body = {"items": [{"sku_id": sku.id, "quantity": 3}]}
+
+    quote = client.post("/store/cart/quote", json=body)
+    assert quote.status_code == 200, quote.text
+    assert quote.json()["total"] == 54.0
+
+    user, _, address = ready_retailer(db)
+    signed_in = client.post("/store/cart/quote", json=body, headers=auth_headers(user)).json()
+    assert signed_in["total"] == quote.json()["total"]
+    assert client.post("/store/orders", json=_order_body(sku, address)).status_code in (401, 403)

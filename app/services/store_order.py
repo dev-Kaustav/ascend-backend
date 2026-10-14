@@ -174,8 +174,10 @@ def quote_cart(db: Session, user, payload) -> dict:
     warehouse = _open_warehouse(db)
     merged = _merge_lines(payload.items)
     lines = _price_lines(db, merged)
-    retailer = db.query(Retailer).filter(Retailer.id == user.retailer_id).first()
-    inter_state = _is_inter_state(warehouse, retailer)
+    # Totals are GST-inclusive, so a guest's quote (no shop, so no place of supply) has the same
+    # rupees as the order; only the CGST/SGST-versus-IGST split waits for the shop.
+    retailer = db.query(Retailer).filter(Retailer.id == user.retailer_id).first() if user else None
+    inter_state = _is_inter_state(warehouse, retailer) if retailer else False
     available = storefront_availability(db, list(merged))
 
     items = [_quote_item(line["sku"], line, inter_state) for line in lines]

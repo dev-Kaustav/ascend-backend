@@ -39,9 +39,7 @@ class StoreProduct(BaseModel):
     units_per_pack: int = 1
     mrp: float
     in_stock: bool
-    # Retailer-only (D-10): omitted from the JSON for every other viewer.
     trade_price: Optional[float] = None
-    max_orderable: Optional[int] = None
 
 
 class StoreProductPage(BaseModel):

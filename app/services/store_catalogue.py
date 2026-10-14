@@ -1,9 +1,8 @@
 """Read side of the public storefront catalogue (08-04).
 
 Builds dedicated allowlist dicts from SKU/Brand/Category rows; ORM objects and order
-serialisers never reach the response (PORT-06). Stock is only ever reduced to a boolean for an
-anonymous visitor (D-08); a retailer additionally gets the trade price and an orderable maximum
-(D-10, added with the retailer view).
+serialisers never reach the response (PORT-06). Every viewer gets the same shape, trade price
+included; stock is only ever reduced to a boolean (D-08), never a count.
 """
 from decimal import Decimal
 
@@ -73,9 +72,9 @@ def _money(value) -> float:
     return float(_round_money(value))
 
 
-def _product_dict(sku: SKU, brand: Brand, category: Category, available: int, viewer=None) -> dict:
-    # Exactly the anonymous allowlist, plus two retailer-only keys when a retailer is viewing.
-    # Add keys here only after adding them to StoreProduct.
+def _product_dict(sku: SKU, brand: Brand, category: Category, available: int) -> dict:
+    # Exactly the StoreProduct allowlist, the same for every viewer. Add keys here only after adding
+    # them to StoreProduct.
     product = {
         "id": sku.id,
         "code": sku.code,
@@ -87,13 +86,11 @@ def _product_dict(sku: SKU, brand: Brand, category: Category, available: int, vi
         "pack_type": sku.pack_type,
         "units_per_pack": pack_units(sku),
         "mrp": _money(sku.mrp),
+        # Trade prices are public so a visitor can price a cart before logging in. Stock is only
+        # ever this boolean, never a count (D-08): shortages are trimmed at checkout.
+        "trade_price": _money(sku.amount),
         "in_stock": orderable_cap(available, pack_units(sku)) > 0,
     }
-    if viewer is not None:
-        # D-10: only a signed-in retailer sees its price and the "+" cap. Anonymous viewers
-        # get the in_stock boolean and never the count (D-08).
-        product["trade_price"] = _money(sku.amount)
-        product["max_orderable"] = orderable_cap(available, pack_units(sku))
     return product
 
 
@@ -138,7 +135,6 @@ def _visible_rows_query(db: Session):
 
 def list_store_products(
     db: Session,
-    viewer,
     *,
     category_id: int | None = None,
     brand_id: int | None = None,
@@ -167,14 +163,14 @@ def list_store_products(
     rows.sort(key=lambda row: (available.get(row[0].id, 0) <= 0, (row[0].name or "").lower(), row[0].id))
     total = len(rows)
     page = rows[offset : offset + limit]
-    items = [_product_dict(sku, brand, category, available.get(sku.id, 0), viewer) for sku, brand, category in page]
+    items = [_product_dict(sku, brand, category, available.get(sku.id, 0)) for sku, brand, category in page]
     return items, total
 
 
-def get_store_product(db: Session, viewer, product_id: int) -> dict:
+def get_store_product(db: Session, product_id: int) -> dict:
     row = _visible_rows_query(db).filter(SKU.id == product_id).first()
     if row is None:
         raise StoreProductNotFound(product_id)
     sku, brand, category = row
     available = storefront_availability(db, [sku.id])
-    return _product_dict(sku, brand, category, available.get(sku.id, 0), viewer)
+    return _product_dict(sku, brand, category, available.get(sku.id, 0))

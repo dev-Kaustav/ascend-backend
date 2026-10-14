@@ -17,7 +17,7 @@ from app.tests.store_helpers import (
     stocked_sku,
 )
 
-ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "pack_size", "units_per_pack", "mrp", "in_stock"}
+ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "pack_size", "units_per_pack", "mrp", "trade_price", "in_stock"}
 
 
 def _peanut(db, warehouse, brand, category, **overrides):
@@ -60,6 +60,7 @@ def test_anonymous_lists_visible_products_with_mrp_and_in_stock_flag(client, db)
             "pack_size": "23 g",
             "units_per_pack": 1,
             "mrp": 8.0,
+            "trade_price": 6.5,
             "in_stock": True,
         }
     ]
@@ -341,21 +342,17 @@ def test_ladi_pack_is_shown_and_caps_round_down_to_whole_ladis(client, db):
     assert anon["units_per_pack"] == 12
     assert client.get(f"/store/products/{short.id}").json()["in_stock"] is False
 
-    headers = _retailer_headers(db)
-    assert client.get(f"/store/products/{sku.id}", headers=headers).json()["max_orderable"] == 24
-    assert client.get(f"/store/products/{short.id}", headers=headers).json()["max_orderable"] == 0
+    assert "max_orderable" not in client.get(f"/store/products/{sku.id}", headers=_retailer_headers(db)).json()
 
 
 # ---------------------------------------------------------------------------
 # Task 3: retailer view, 401 on a bad token, Vary header, leak-proof anonymous view
 # ---------------------------------------------------------------------------
 
-RETAILER_ONLY = {"trade_price", "max_orderable"}
-
 FORBIDDEN_KEYS = {
     "rate", "amount", "distributor_landing_price", "discount_amount", "discount_percent",
     "sgst_percent", "sgst_amount", "cgst_percent", "cgst_amount", "igst_percent", "igst_amount",
-    "trade_price", "max_orderable", "quantity", "total_quantity", "reserved_quantity",
+    "max_orderable", "quantity", "total_quantity", "reserved_quantity",
     "remaining_quantity", "available_quantity", "warehouse_id",
 }
 
@@ -385,7 +382,7 @@ def _retailer_headers(db):
     return auth_headers(make_user(db, EmployeeRole.RETAILER, retailer_id=retailer.id))
 
 
-def test_retailer_token_adds_trade_price_and_orderable_maximum(client, db):
+def test_every_viewer_sees_the_trade_price_and_no_stock_count(client, db):
     warehouse, brand = _catalogue(db)
     category = make_category(db, "Roasted Nuts & Seeds")
     plenty = _peanut(db, warehouse, brand, category, name="Plenty", code="P-1", amount="6.125", qty=1500)
@@ -396,15 +393,13 @@ def test_retailer_token_adds_trade_price_and_orderable_maximum(client, db):
     listed = {i["id"]: i for i in client.get("/store/products", headers=headers).json()["items"]}
 
     assert listed[plenty.id]["trade_price"] == 6.13  # half-up from 6.125
-    assert listed[plenty.id]["max_orderable"] == 999  # capped at MAX_LINE_QUANTITY
     assert listed[few.id]["trade_price"] == 6.5
-    assert listed[few.id]["max_orderable"] == 7
     assert listed[none_left.id]["trade_price"] == 7.0
-    assert listed[none_left.id]["max_orderable"] == 0
     assert listed[none_left.id]["in_stock"] is False
-    assert set(listed[few.id]) == ANON_KEYS | RETAILER_ONLY
+    assert set(listed[few.id]) == ANON_KEYS
     detail = client.get(f"/store/products/{few.id}", headers=headers).json()
     assert detail == listed[few.id]
+    assert client.get("/store/products").json() == client.get("/store/products", headers=headers).json()
 
 
 def test_linked_but_unconfirmed_retailer_gets_the_anonymous_shape(client, db):
@@ -511,6 +506,6 @@ def test_anonymous_bodies_contain_no_forbidden_key_anywhere(client, db):
 
 
 def test_response_schema_field_sets_are_the_allowlist():
-    assert set(StoreProduct.model_fields) == ANON_KEYS | RETAILER_ONLY | {"pack_type"}
+    assert set(StoreProduct.model_fields) == ANON_KEYS | {"pack_type"}
     assert set(StoreBrand.model_fields) == {"id", "name"}
     assert set(StoreCategory.model_fields) == {"id", "name", "icon_url"}

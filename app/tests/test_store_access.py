@@ -193,7 +193,6 @@ def test_staff_tokens_are_refused_on_every_retailer_only_store_route(client, db,
     responses = {
         "GET /store/me": client.get("/store/me", headers=headers),
         "GET /store/me/addresses": client.get("/store/me/addresses", headers=headers),
-        "POST /store/cart/quote": client.post("/store/cart/quote", json=quote_body, headers=headers),
         "POST /store/orders": client.post("/store/orders", json=order_body, headers=headers),
         "GET /store/orders": client.get("/store/orders", headers=headers),
         "GET /store/orders/{id}": client.get(f"/store/orders/{a_order}", headers=headers),
@@ -203,6 +202,8 @@ def test_staff_tokens_are_refused_on_every_retailer_only_store_route(client, db,
     }
 
     assert {name: r.status_code for name, r in responses.items()} == {name: 403 for name in responses}
+    # Pricing a cart is open to guests, so staff get a guest quote rather than a refusal.
+    assert client.post("/store/cart/quote", json=quote_body, headers=headers).status_code == 200
 
 
 @pytest.mark.parametrize("role", STAFF_ROLES)
@@ -217,10 +218,8 @@ def test_staff_see_the_anonymous_catalogue_shape(client, db, role):
     assert staff_view.status_code == 200
     items = staff_view.json()["items"]
     assert items, "the catalogue must list the stocked SKU for this check to mean anything"
-    assert all("trade_price" not in item and "max_orderable" not in item for item in items)
-    assert staff_view.json() == anonymous.json()
-    # The retailer's own view does carry trade pricing, so the absence above is the role check.
-    assert all("trade_price" in item for item in retailer_view.json()["items"])
+    assert all("max_orderable" not in item for item in items)
+    assert staff_view.json() == anonymous.json() == retailer_view.json()
 
 
 # --- outlet-finder lookup and the identity-keyed routes ---------------------------------------
