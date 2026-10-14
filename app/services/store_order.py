@@ -31,7 +31,9 @@ from app.services.order import (
 )
 from app.services.store_catalogue import (
     MAX_LINE_QUANTITY,
+    orderable_cap,
     pack_size_label,
+    pack_units,
     storefront_availability,
     store_visible_sku_criterion,
 )
@@ -68,7 +70,7 @@ class StoreOrderNotFound(Exception):
 
 class InvalidCart(ValueError):
     """A cart the validation layer could not catch on its own (duplicate lines merged above the
-    per-line cap)."""
+    per-line cap, or a quantity that is not a whole number of packs)."""
 
 
 def _merge_lines(items) -> dict[int, int]:
@@ -97,6 +99,11 @@ def _price_lines(db: Session, merged: dict[int, int]) -> list[dict]:
     missing = [sku_id for sku_id in merged if sku_id not in skus]
     if missing:
         raise UnknownProducts(sorted(missing))
+    for sku_id, quantity in merged.items():
+        units = pack_units(skus[sku_id])
+        if quantity % units:
+            pack = skus[sku_id].pack_type or "pack"
+            raise InvalidCart(f"{skus[sku_id].name} is sold in whole {pack}s of {units} pieces")
     lines = []
     for sku_id, quantity in merged.items():
         sku = skus[sku_id]
@@ -132,19 +139,19 @@ def _delivery_charge(db: Session, lines: list[dict]) -> Decimal:
     return compute_delivery_charge(cart_value, settings.min_order_value, settings.delivery_charge_percent)
 
 
-def _orderable_cap(available: dict[int, int], sku_id: int) -> int:
-    return min(max(available.get(sku_id, 0), 0), MAX_LINE_QUANTITY)
+def _orderable_cap(available: dict[int, int], sku: SKU) -> int:
+    return orderable_cap(available.get(sku.id, 0), pack_units(sku))
 
 
-def _stock_conflict(merged: dict[int, int], available: dict[int, int], *, only_short: bool) -> StockChanged:
+def _stock_conflict(lines: list[dict], available: dict[int, int], *, only_short: bool) -> StockChanged:
     """Build the sanitized conflict from computed availability, never from exception text.
     only_short lists the lines that exceed it; otherwise (a race the pre-check could not see)
     every line is listed with its current cap so the client can re-fit the whole cart."""
     items = []
-    for sku_id, quantity in merged.items():
-        cap = _orderable_cap(available, sku_id)
-        if quantity > cap or not only_short:
-            items.append({"sku_id": sku_id, "max_quantity": cap})
+    for line in lines:
+        cap = _orderable_cap(available, line["sku"])
+        if line["quantity"] > cap or not only_short:
+            items.append({"sku_id": line["sku"].id, "max_quantity": cap})
     return StockChanged(items)
 
 
@@ -175,13 +182,15 @@ def quote_cart(db: Session, user, payload) -> dict:
     out_lines = []
     for line, item in zip(lines, items):
         sku = line["sku"]
-        cap = _orderable_cap(available, sku.id)
+        cap = _orderable_cap(available, sku)
         out_lines.append(
             {
                 "sku_id": sku.id,
                 "name": sku.name,
                 "image_url": sku.image_url,
                 "pack_size": pack_size_label(sku.net_weight_g),
+                "pack_type": sku.pack_type,
+                "units_per_pack": pack_units(sku),
                 "mrp": float(line["unit_price"]),
                 "trade_price": float(_round_money(sku.amount)),
                 "quantity": line["quantity"],
@@ -219,8 +228,8 @@ def place_store_order(db: Session, user, payload) -> Order:
     # Cheap early refusal, before any lock is taken. Not the authority: the FOR UPDATE
     # reservation inside create_outgoing_order decides, and its refusal is mapped below.
     available = storefront_availability(db, list(merged))
-    if any(quantity > _orderable_cap(available, sku_id) for sku_id, quantity in merged.items()):
-        raise _stock_conflict(merged, available, only_short=True)
+    if any(line["quantity"] > _orderable_cap(available, line["sku"]) for line in lines):
+        raise _stock_conflict(lines, available, only_short=True)
 
     # Nothing from the request body is trusted beyond sku ids, quantities and the address id.
     order_create = OrderCreate(
@@ -254,7 +263,7 @@ def place_store_order(db: Session, user, payload) -> Order:
         )
     except InsufficientStockError:
         # create_outgoing_order already rolled back; availability is re-read, the text is dropped.
-        raise _stock_conflict(merged, storefront_availability(db, list(merged)), only_short=False)
+        raise _stock_conflict(lines, storefront_availability(db, list(merged)), only_short=False)
 
 
 def _detail(db: Session, order: Order) -> dict:
@@ -269,6 +278,8 @@ def _detail(db: Session, order: Order) -> dict:
                 "name": sku.name if sku else None,
                 "image_url": sku.image_url if sku else None,
                 "pack_size": pack_size_label(sku.net_weight_g) if sku else None,
+                "pack_type": sku.pack_type if sku else None,
+                "units_per_pack": pack_units(sku) if sku else 1,
                 "quantity": item.quantity,
                 "mrp": float(_round_money(item.unit_price)),
                 "line_total": float(calculate_order_item_totals(item)["line_total"]),

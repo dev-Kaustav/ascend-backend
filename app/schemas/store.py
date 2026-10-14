@@ -34,6 +34,9 @@ class StoreProduct(BaseModel):
     category: StoreCategory
     image_url: Optional[str] = None
     pack_size: Optional[str] = None
+    # Quantities are pieces; the storefront steps them by units_per_pack (a ladi), 1 for loose pieces.
+    pack_type: Optional[str] = None
+    units_per_pack: int = 1
     mrp: float
     in_stock: bool
     # Retailer-only (D-10): omitted from the JSON for every other viewer.
@@ -241,6 +244,8 @@ class StoreOrderLine(BaseModel):
     name: Optional[str] = None
     image_url: Optional[str] = None
     pack_size: Optional[str] = None
+    pack_type: Optional[str] = None
+    units_per_pack: int = 1
     quantity: int
     mrp: float
     line_total: float
@@ -267,6 +272,8 @@ class StoreQuoteLine(BaseModel):
     name: Optional[str] = None
     image_url: Optional[str] = None
     pack_size: Optional[str] = None
+    pack_type: Optional[str] = None
+    units_per_pack: int = 1
     mrp: float
     trade_price: float
     quantity: int

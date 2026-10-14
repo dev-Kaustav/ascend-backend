@@ -140,12 +140,14 @@ def test_order_detail_is_an_allowlisted_view_of_the_callers_order(client, db):
     assert body["invoice_available"] is False
     assert body["subtotal"] == 54.0 and body["total"] == 54.0
     (line,) = body["lines"]
-    assert set(line) == {"sku_id", "name", "image_url", "pack_size", "quantity", "mrp", "line_total"}
+    assert set(line) == {"sku_id", "name", "image_url", "pack_size", "pack_type", "units_per_pack", "quantity", "mrp", "line_total"}
     assert line == {
         "sku_id": sku.id,
         "name": "Masala Chips",
         "image_url": "https://jabsons.com/cdn/x.webp",
         "pack_size": "23 g",
+        "pack_type": None,
+        "units_per_pack": 1,
         "quantity": 3,
         "mrp": 22.5,
         "line_total": 54.0,
@@ -216,6 +218,8 @@ def test_quote_prices_lines_like_the_order_and_totals_match_the_placed_order(cli
         "name": "Masala Chips",
         "image_url": "https://jabsons.com/cdn/x.webp",
         "pack_size": "23 g",
+        "pack_type": None,
+        "units_per_pack": 1,
         "mrp": 22.5,
         "trade_price": 18.0,
         "quantity": 3,
@@ -606,3 +610,28 @@ def test_a_brand_new_number_can_order_straight_after_finishing_shop_setup(client
     order = db.query(Order).one()
     assert order.salesman_id is None
     assert order.to_entity_id == db.query(Retailer).one().id
+
+
+def test_ladi_skus_take_whole_ladis_only_and_cap_stock_to_whole_ladis(client, db):
+    _, _, _, sku = _store(db, qty=30)
+    sku.pack_type = "ladi"
+    sku.units_per_pack = 12
+    db.commit()
+    user, _, address = ready_retailer(db)
+    headers = auth_headers(user)
+
+    loose = client.post("/store/cart/quote", json={"items": [{"sku_id": sku.id, "quantity": 5}]}, headers=headers)
+    assert loose.status_code == 422
+    assert "whole ladis of 12" in loose.json()["detail"]
+    assert client.post("/store/orders", json=_order_body(sku, address, 5), headers=headers).status_code == 422
+
+    (line,) = client.post("/store/cart/quote", json={"items": [{"sku_id": sku.id, "quantity": 36}]}, headers=headers).json()["lines"]
+    assert line["units_per_pack"] == 12 and line["pack_type"] == "ladi"
+    assert line["max_orderable"] == 24 and line["within_stock"] is False
+
+    short = client.post("/store/orders", json=_order_body(sku, address, 36), headers=headers)
+    assert short.status_code == 409
+    assert short.json()["items"] == [{"sku_id": sku.id, "max_quantity": 24}]
+
+    placed = client.post("/store/orders", json=_order_body(sku, address, 24), headers=headers)
+    assert placed.status_code == 201, placed.text

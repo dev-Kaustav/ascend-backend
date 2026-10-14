@@ -43,6 +43,18 @@ def pack_size_label(net_weight_g) -> str | None:
     return f"{kilos:f} kg"
 
 
+def pack_units(sku) -> int:
+    """Pieces in one storefront pack (a ladi). 1 when the SKU is sold by the piece."""
+    return sku.units_per_pack if sku.units_per_pack and sku.units_per_pack > 0 else 1
+
+
+def orderable_cap(available: int, units: int) -> int:
+    """The most pieces a retailer may order: available stock and the line cap, rounded down to
+    whole packs."""
+    cap = min(max(available, 0), MAX_LINE_QUANTITY)
+    return cap - cap % units
+
+
 def storefront_availability(db: Session, sku_ids) -> dict[int, int]:
     """Allocatable units per SKU at the storefront warehouse, one inventory query for all ids.
 
@@ -72,14 +84,16 @@ def _product_dict(sku: SKU, brand: Brand, category: Category, available: int, vi
         "category": {"id": category.id, "name": category.name, "icon_url": category.icon_url},
         "image_url": sku.image_url,
         "pack_size": pack_size_label(sku.net_weight_g),
+        "pack_type": sku.pack_type,
+        "units_per_pack": pack_units(sku),
         "mrp": _money(sku.mrp),
-        "in_stock": available > 0,
+        "in_stock": orderable_cap(available, pack_units(sku)) > 0,
     }
     if viewer is not None:
         # D-10: only a signed-in retailer sees its price and the "+" cap. Anonymous viewers
         # get the in_stock boolean and never the count (D-08).
         product["trade_price"] = _money(sku.amount)
-        product["max_orderable"] = min(max(available, 0), MAX_LINE_QUANTITY)
+        product["max_orderable"] = orderable_cap(available, pack_units(sku))
     return product
 
 

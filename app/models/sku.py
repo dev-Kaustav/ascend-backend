@@ -45,7 +45,7 @@ class SKU(Base):
     )
     # Whole grams; the only pack-size source (D-03).
     net_weight_g = Column(Integer)
-    # D-02 provision: pack_type (box | case | ladi) and units_per_pack are admin-writable but
-    # not read by ordering this phase.
+    # pack_type (box | case | ladi) and units_per_pack: the storefront sells only whole packs of
+    # units_per_pack pieces. Quantities stay in pieces; NULL means single pieces.
     pack_type = Column(String(8))
     units_per_pack = Column(Integer)

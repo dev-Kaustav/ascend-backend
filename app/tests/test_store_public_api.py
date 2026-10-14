@@ -17,7 +17,7 @@ from app.tests.store_helpers import (
     stocked_sku,
 )
 
-ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "pack_size", "mrp", "in_stock"}
+ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "pack_size", "units_per_pack", "mrp", "in_stock"}
 
 
 def _peanut(db, warehouse, brand, category, **overrides):
@@ -58,6 +58,7 @@ def test_anonymous_lists_visible_products_with_mrp_and_in_stock_flag(client, db)
             "category": {"id": category.id, "name": "Roasted Nuts & Seeds", "icon_url": "https://jabsons.com/cdn/nuts.png"},
             "image_url": "https://jabsons.com/cdn/x.webp",
             "pack_size": "23 g",
+            "units_per_pack": 1,
             "mrp": 8.0,
             "in_stock": True,
         }
@@ -324,18 +325,25 @@ def test_pack_size_labels_and_absent_key_when_weight_unknown(client, db):
     assert client.get(f"/store/products/{heavy.id}").json()["pack_size"] == "1.5 kg"
 
 
-def test_pack_provision_fields_never_appear(client, db):
+def test_ladi_pack_is_shown_and_caps_round_down_to_whole_ladis(client, db):
     warehouse, brand = _catalogue(db)
     category = make_category(db, "Dry Fruits")
-    sku = _peanut(db, warehouse, brand, category)
-    sku.pack_type = "case"
-    sku.units_per_pack = 24
+    sku = _peanut(db, warehouse, brand, category, qty=30)
+    sku.pack_type = "ladi"
+    sku.units_per_pack = 12
+    short = _peanut(db, warehouse, brand, category, name="Short", code="S-1", qty=11)
+    short.pack_type = "ladi"
+    short.units_per_pack = 12
     db.commit()
 
-    text = client.get("/store/products").text + client.get(f"/store/products/{sku.id}").text
+    anon = client.get(f"/store/products/{sku.id}").json()
+    assert anon["pack_type"] == "ladi"
+    assert anon["units_per_pack"] == 12
+    assert client.get(f"/store/products/{short.id}").json()["in_stock"] is False
 
-    assert "pack_type" not in text
-    assert "units_per_pack" not in text
+    headers = _retailer_headers(db)
+    assert client.get(f"/store/products/{sku.id}", headers=headers).json()["max_orderable"] == 24
+    assert client.get(f"/store/products/{short.id}", headers=headers).json()["max_orderable"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +356,7 @@ FORBIDDEN_KEYS = {
     "rate", "amount", "distributor_landing_price", "discount_amount", "discount_percent",
     "sgst_percent", "sgst_amount", "cgst_percent", "cgst_amount", "igst_percent", "igst_amount",
     "trade_price", "max_orderable", "quantity", "total_quantity", "reserved_quantity",
-    "remaining_quantity", "available_quantity", "warehouse_id", "pack_type", "units_per_pack",
+    "remaining_quantity", "available_quantity", "warehouse_id",
 }
 
 
@@ -503,6 +511,6 @@ def test_anonymous_bodies_contain_no_forbidden_key_anywhere(client, db):
 
 
 def test_response_schema_field_sets_are_the_allowlist():
-    assert set(StoreProduct.model_fields) == ANON_KEYS | RETAILER_ONLY
+    assert set(StoreProduct.model_fields) == ANON_KEYS | RETAILER_ONLY | {"pack_type"}
     assert set(StoreBrand.model_fields) == {"id", "name"}
     assert set(StoreCategory.model_fields) == {"id", "name", "icon_url"}
