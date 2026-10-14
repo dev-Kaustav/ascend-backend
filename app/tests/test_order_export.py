@@ -93,9 +93,11 @@ def test_workbook_has_autofilter_and_formats_aligned_to_headers(db):
         "Order Date",
         "Order ID",
         "Channel",
+        "Order Status",
         "Invoice Number",
         "Customer Name ( Retailer Name)",
         "Retailer ID",
+        "GST Number",
         "SKU",
         "SKU Quantity",
         "Salesman Name",
@@ -117,6 +119,19 @@ def test_workbook_has_autofilter_and_formats_aligned_to_headers(db):
     for header in ("SKU Quantity", "MRP", "Discount %", "Amount", "Rate"):
         assert sheet.cell(row=2, column=col[header]).number_format == "0.00"
     assert sheet.cell(row=2, column=col["Invoice Number"]).value == order.invoice.invoice_number
+
+
+def test_export_rows_carry_order_status_and_retailer_gst_number(db):
+    warehouse, retailer, sku, driver, user = _seed_world(db)
+    retailer.gst_number = "07ABCDE1234F1Z5"
+    db.commit()
+    order = _place_order(db, warehouse, retailer, sku, user, 5)
+    _deliver(db, order, driver, user)
+
+    row = next(row for row in get_order_export_rows(db) if row["Order ID"] == order.id)
+
+    assert row["Order Status"] == OrderStatus.DELIVERED.value
+    assert row["GST Number"] == "07ABCDE1234F1Z5"
 
 
 def test_channel_filter_matches_list_and_excel_export(client, db):
