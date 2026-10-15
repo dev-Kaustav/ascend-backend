@@ -203,6 +203,7 @@ class RetailerResponse(BaseModel):
     latitude: Optional[float]
     longitude: Optional[float]
     beat_id: Optional[int] = None
+    created_at: Optional[datetime] = None
 
 class RetailerUpdate(RetailerCreate):
     model_config = ConfigDict(extra="ignore")

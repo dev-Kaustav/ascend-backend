@@ -10,6 +10,9 @@ from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceV
 from app.core.deps import require_roles
 from app.services import inventory as inventory_service
 from app.models import User
+from app.schemas.order import CashCollectionCreate
+from app.schemas.accounting import PaymentResponse
+from app.services.order import record_salesman_cash
 
 router = APIRouter()
 
@@ -101,6 +104,23 @@ def get_order(
         raise HTTPException(status_code=404, detail=str(e))
     except OrderScopeError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+@router.post("/{order_id}/cash-collections", response_model=PaymentResponse)
+def record_cash_collection(
+    order_id: int,
+    collection: CashCollectionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("SALESMAN")),
+):
+    try:
+        return record_salesman_cash(db, order_id, collection, current_user)
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except OrderScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.patch("/{order_id}/status")
 def update_status(

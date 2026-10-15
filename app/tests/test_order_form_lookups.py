@@ -112,6 +112,36 @@ def test_lookups_path_is_not_swallowed_by_the_order_id_route(db, client, lookups
     assert [r["name"] for r in response.json()["retailers"]] == [lookups_fixture["mine"].name]
 
 
+def test_retailer_lookup_includes_first_address_line(db, client, lookups_fixture):
+    retailer = lookups_fixture["mine"]
+    retailer.address_line1 = "Shop 12, Main Market"
+    retailer.address_line2 = "Near the bus stop"
+    retailer.city = "Gurgaon"
+    db.commit()
+    user = _user(db, "SALESMAN", employee_id=lookups_fixture["salesman"].id)
+
+    response = client.get("/orders/lookups", headers=_headers(user))
+
+    assert response.status_code == 200
+    assert response.json()["retailers"][0]["address_line1"] == "Shop 12, Main Market"
+
+
+def test_admin_retailer_lookups_preserve_date_added_on_edit(db, client, lookups_fixture):
+    retailer = lookups_fixture["mine"]
+    added_at = retailer.created_at
+    assert added_at is not None
+    retailer.city = "Gurgaon"
+    db.commit()
+    db.refresh(retailer)
+    assert retailer.created_at == added_at
+
+    response = client.get("/admin/lookups", headers=_headers(_user(db, "ADMIN")))
+
+    assert response.status_code == 200
+    offered = next(row for row in response.json()["retailers"] if row["id"] == retailer.id)
+    assert offered["created_at"] == added_at.isoformat()
+
+
 def test_missing_company_invoice_fields_lists_every_blank_supplier_field(db):
     assert missing_company_invoice_fields(None) == [
         "legal_name", "gstin", "state", "address_line1", "pincode",

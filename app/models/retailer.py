@@ -31,6 +31,8 @@ class Retailer(Base):
     )
     # 08-08 / D-18: 'STORE' marks a self-signed-up shop so admins can find them.
     signup_source = Column(String(16), nullable=True)
+    # Historical rows have no recorded date; new retailers get the database timestamp.
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
 
 
 class RetailerAddress(Base):

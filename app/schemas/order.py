@@ -1,4 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
+from decimal import Decimal
+from uuid import UUID
 from typing import Optional
 from datetime import datetime
 
@@ -31,6 +33,12 @@ class OrderCreate(BaseModel):
     panel_status: Optional[str] = None
     issue_category: Optional[str] = None
     description: Optional[str] = None
+
+class CashCollectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2, allow_inf_nan=False)
+    collection_id: UUID
+
 
 class OrderItemTaxResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -106,6 +114,7 @@ class OrderResponse(BaseModel):
     delivery_driver_name: Optional[str] = None
     total_amount: Optional[float] = None
     pending_amount: Optional[float] = None
+    can_collect_cash: bool = False
     taxable_value: Optional[float] = None
     gst_amount: Optional[float] = None
     subtotal: Optional[float] = None

@@ -1,4 +1,4 @@
-from datetime import datetime, date, time as dtime
+from datetime import datetime, date, time as dtime, timezone
 from decimal import Decimal
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import and_, func
@@ -128,6 +128,21 @@ def _is_outgoing_order(order: Order) -> bool:
     return order.from_entity_type == "WAREHOUSE" and order.to_entity_type == "RETAILER"
 
 
+def _salesman_created_order(order: Order, current_user) -> bool:
+    # salesman_id also attributes admin/storefront orders; the creation trail proves authorship.
+    return (
+        get_role_value(current_user) == "SALESMAN"
+        and bool(getattr(current_user, "employee_id", None))
+        and _is_outgoing_order(order)
+        and any(
+            trail.description == "Order created"
+            and trail.order_status == OrderStatus.PENDING
+            and trail.changed_by_id == current_user.id
+            for trail in order.trails
+        )
+    )
+
+
 def _assert_order_in_scope(current_user, order: Order, db: Session):
     role = get_role_value(current_user)
     if role in {"ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"}:
@@ -136,6 +151,8 @@ def _assert_order_in_scope(current_user, order: Order, db: Session):
         employee_id = getattr(current_user, "employee_id", None)
         if not employee_id:
             raise OrderScopeError("Salesman missing employee record")
+        if _salesman_created_order(order, current_user):
+            return
         retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
         if not retailer or retailer.assigned_salesman_id != employee_id:
             raise OrderScopeError("Order retailer is not assigned to this salesman")
@@ -166,7 +183,12 @@ def scoped_orders_query(db: Session, current_user):
         if not employee_id:
             raise OrderScopeError("Salesman missing employee record")
         return query.join(Retailer, Retailer.id == Order.to_entity_id).filter(
-            Retailer.assigned_salesman_id == employee_id
+            (Retailer.assigned_salesman_id == employee_id)
+            | Order.trails.any(and_(
+                OrderTrail.description == "Order created",
+                OrderTrail.order_status == OrderStatus.PENDING,
+                OrderTrail.changed_by_id == current_user.id,
+            ))
         )
     if role == "DRIVER":
         employee_id = getattr(current_user, "employee_id", None)
@@ -512,6 +534,39 @@ def _record_payment(db: Session, order: Order, payment_mode: str | None, payment
         order.payment_status = PaymentStatus.PARTIAL
     else:
         order.payment_status = PaymentStatus.CREDIT
+
+def record_salesman_cash(db: Session, order_id: int, collection, current_user):
+    with transactional_session(db):
+        order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+        if not order:
+            raise OrderNotFoundError("Order not found")
+        if not _salesman_created_order(order, current_user):
+            raise OrderScopeError("You can collect cash only for orders you created")
+        reference = f"SALESMAN-CASH-{collection.collection_id}"
+        existing = db.query(Account).filter(Account.transaction_reference == reference).first()
+        if existing:
+            if (
+                existing.order_id != order_id
+                or existing.collected_by_id != current_user.employee_id
+                or existing.amount != collection.amount
+            ):
+                raise ValueError("This collection reference has already been used")
+            return existing
+        if order.status == OrderStatus.CANCELLED:
+            raise ValueError("Cannot collect cash for a cancelled order")
+        _record_payment(db, order, "CASH", collection.amount)
+        payment = order.payments[-1]
+        payment.transaction_reference = reference
+        payment.collected_by_id = current_user.employee_id
+        payment.collection_date = datetime.now(timezone.utc)
+        db.add(OrderTrail(
+            order_id=order.id,
+            order_status=order.status,
+            description=f"Cash collected: INR {collection.amount:.2f}",
+            changed_by_id=current_user.id,
+        ))
+    return payment
+
 
 def _build_trail_description(order: Order, next_status: OrderStatus) -> str:
     if next_status == OrderStatus.READY_TO_SHIP:
@@ -927,7 +982,13 @@ def get_order_detail(db: Session, order_id: int, current_user):
     if not order:
         raise OrderNotFoundError("Order not found")
     _assert_order_in_scope(current_user, order, db)
-    return _serialize_order(db, order)
+    result = _serialize_order(db, order)
+    result["can_collect_cash"] = bool(
+        _salesman_created_order(order, current_user)
+        and order.status != OrderStatus.CANCELLED
+        and result["pending_amount"] > 0
+    )
+    return result
 
 def get_order_invoice_view(db: Session, order_id: int, current_user):
     order = _order_detail_query(db).filter(Order.id == order_id).first()
