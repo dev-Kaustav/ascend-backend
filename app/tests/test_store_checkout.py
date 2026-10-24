@@ -2,6 +2,8 @@
 order pipeline, to a saved address, and can read it back (STORE-06, STORE-12, PORT-06)."""
 from decimal import Decimal
 
+import pytest
+
 from app.models import Employee, Inventory, Order, OrderItem, SKUBatch
 from app.models.enums import EmployeeRole, OrderStatus
 from app.schemas.order import OrderCreate, OrderItemCreate
@@ -77,8 +79,9 @@ def test_ready_retailer_places_a_server_priced_order_to_a_saved_address(client, 
     assert item.unit_price == Decimal("22.50")
     assert item.discount_amount == Decimal("13.50")  # (22.5 - 18.0) x 3
     assert item.quantity == 3
-    assert db.query(SKUBatch).one().reserved_quantity == 3
-    assert db.query(Inventory).one().reserved_quantity == 3
+    # Stock is blocked when the admin marks the order Ready to Ship, not at checkout.
+    assert db.query(SKUBatch).one().reserved_quantity == 0
+    assert db.query(Inventory).one().reserved_quantity == 0
 
     # The ship-to is copied from the chosen saved address (D-29).
     assert order.delivery_address_id == address.id
@@ -309,9 +312,10 @@ def test_quantity_equal_to_stock_succeeds_and_one_more_is_refused_without_leakin
 
     ok = client.post("/store/orders", json=_order_body(sku, address, 5), headers=headers)
     assert ok.status_code == 201, ok.text
-    assert _counts(db)["reserved"] == 5
+    assert _counts(db)["orders"] == before["orders"] + 1
 
 
+@pytest.mark.skip(reason="checkout no longer reserves stock; it is blocked at Ready to Ship")
 def test_a_reservation_refused_under_the_lock_is_the_same_sanitized_409(client, db, monkeypatch):
     warehouse, _, _, sku = _store(db, qty=5)
     user, _, address = ready_retailer(db)

@@ -12,7 +12,8 @@ import pytest
 from sqlalchemy import event
 
 from app.services.admin import get_inventory
-from app.services.order import create_outgoing_order, InsufficientStockError
+from app.services.order import InsufficientStockError
+from app.tests.reserve_helpers import create_and_reserve
 from app.services import inventory as inventory_service
 from app.schemas.order import OrderCreate, OrderItemCreate
 from app.models import SKU, SKUBatch, Inventory, User, Brand, Retailer, Warehouse
@@ -156,7 +157,7 @@ def test_reported_expired_stock_is_exactly_what_allocation_refuses(db, as_of):
         items=[OrderItemCreate(sku_id=sku.id, quantity=1, unit_price=100, discount_amount=0)],
     )
     with pytest.raises(InsufficientStockError):
-        create_outgoing_order(db, order, user)
+        create_and_reserve(db, order, user)
 
 
 def test_reported_available_stock_is_exactly_what_allocation_honours(db, as_of):
@@ -189,9 +190,9 @@ def test_reported_available_stock_is_exactly_what_allocation_honours(db, as_of):
         )
 
     with pytest.raises(InsufficientStockError):
-        create_outgoing_order(db, _order(10), user)
+        create_and_reserve(db, _order(10), user)
     db.rollback()
-    assert create_outgoing_order(db, _order(9), user) is not None
+    assert create_and_reserve(db, _order(9), user) is not None
 
 
 def test_inventory_endpoint_query_count_does_not_grow_with_rows(db, as_of):

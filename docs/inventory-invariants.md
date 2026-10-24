@@ -77,7 +77,10 @@ fails loudly — on purpose — the day someone changes this behaviour.
   `READY_TO_SHIP` transition. **False.** Rows are written at order creation
   (`order.py:177-182`, inside `_reserve_inventory_for_order`, called from
   `create_outgoing_order`); the `READY_TO_SHIP` transition moves no inventory at all
-  (plan 04-04).
+  (plan 04-04). **Superseded 2026-10-24:** reservation moved to the `PENDING` →
+  `READY_TO_SHIP` transition (an admin / warehouse-manager action), so `OrderItemBatch` rows are
+  now written there and order creation touches no stock. Shortages surface to the admin as a
+  409 on that transition instead of blocking the salesman or retailer at booking.
 
 ## 5. Why no rename
 

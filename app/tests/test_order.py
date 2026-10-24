@@ -4,10 +4,11 @@ from decimal import Decimal
 import pytest
 
 from app.services.order import create_outgoing_order, update_order_status, InsufficientStockError
+from app.tests.reserve_helpers import create_and_reserve
 from app.services import inventory as inventory_service
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.core.security import create_access_token
-from app.models import SKU, SKUBatch, Inventory, Order, User, Brand, Retailer, Warehouse
+from app.models import SKU, SKUBatch, Inventory, Order, User, Brand, Retailer, Warehouse, Employee
 from app.models.enums import EmployeeRole
 
 def test_fefo_allocation(db):
@@ -50,7 +51,7 @@ def test_fefo_allocation(db):
         warehouse_id=warehouse.id,
         items=[OrderItemCreate(sku_id=sku.id, quantity=6, unit_price=100, discount_amount=0)],
     )
-    result = create_outgoing_order(db, order, user)
+    result = create_and_reserve(db, order, user)
     assert result is not None
     updated_inventory = db.query(Inventory).filter(Inventory.sku_id == sku.id).first()
     assert updated_inventory.total_quantity == 15
@@ -90,7 +91,7 @@ def test_insufficient_stock(db):
     db.commit()
     order = OrderCreate(retailer_id=1, warehouse_id=warehouse.id, items=[OrderItemCreate(sku_id=sku.id, quantity=10, unit_price=100, discount_amount=0)])
     with pytest.raises(InsufficientStockError) as excinfo:
-        create_outgoing_order(db, order, user)
+        create_and_reserve(db, order, user)
     # INVT-07: the refusal has to be actionable — which SKU, which warehouse, how short.
     message = str(excinfo.value)
     assert "Test SKU" in message
@@ -100,6 +101,8 @@ def test_insufficient_stock(db):
 
 
 def test_insufficient_stock_returns_409(client, db):
+    """Booking succeeds whatever the stock; the shortage surfaces as a 409 when the admin
+    marks the order Ready to Ship, which is where stock is now blocked."""
     brand = Brand(name="Brand")
     warehouse = Warehouse(name="409 WH", location="Delhi", state="Delhi")
     db.add_all([brand, warehouse])
@@ -112,9 +115,10 @@ def test_insufficient_stock_returns_409(client, db):
     inventory = Inventory(sku_id=sku.id, warehouse_id=warehouse.id, total_quantity=5)
     db.add(inventory)
     admin = User(email="admin@ascend.com", password_hash="x", role=EmployeeRole.ADMIN)
-    db.add(admin)
+    driver = Employee(name="409 Driver", email="driver-409@ascend.com", role=EmployeeRole.DRIVER)
+    db.add_all([admin, driver])
     db.commit()
-    token = create_access_token({"user_id": admin.id, "role": EmployeeRole.ADMIN.value})
+    headers = {"Authorization": f"Bearer {create_access_token({'user_id': admin.id, 'role': EmployeeRole.ADMIN.value})}"}
 
     response = client.post(
         "/orders",
@@ -123,10 +127,17 @@ def test_insufficient_stock_returns_409(client, db):
             "warehouse_id": warehouse.id,
             "items": [{"sku_id": sku.id, "quantity": 10, "unit_price": 100, "discount_amount": 0}]
         },
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    response = client.patch(
+        f"/orders/{response.json()['id']}/status",
+        json={"status": "READY_TO_SHIP", "delivery_driver_id": driver.id},
+        headers=headers,
     )
     assert response.status_code == 409
-    # A string detail, not a list of objects: the order form renders it directly.
+    # A string detail, not a list of objects: the order panel renders it directly.
     assert "409 WH" in response.json()["detail"]
 
 
@@ -192,7 +203,7 @@ def test_stock_in_another_warehouse_names_the_warehouse_ordered_against(db):
 
     order = OrderCreate(retailer_id=1, warehouse_id=warehouse_a.id, items=[OrderItemCreate(sku_id=sku.id, quantity=36, unit_price=10, discount_amount=0)])
     with pytest.raises(InsufficientStockError) as excinfo:
-        create_outgoing_order(db, order, user)
+        create_and_reserve(db, order, user)
     message = str(excinfo.value)
     assert "WH A" in message
     assert "WH B" not in message

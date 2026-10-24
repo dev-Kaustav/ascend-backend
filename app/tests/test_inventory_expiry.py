@@ -14,11 +14,11 @@ from datetime import date, timedelta
 import pytest
 
 from app.services.order import (
-    create_outgoing_order,
     update_order_status,
     InsufficientStockError,
 )
 from app.services import inventory as inventory_service
+from app.tests.reserve_helpers import create_and_reserve
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.models import SKU, SKUBatch, Inventory, OrderItemBatch, User, Brand, Retailer, Warehouse
 from app.models.enums import EmployeeRole
@@ -93,7 +93,7 @@ def test_expired_batch_is_skipped_in_favour_of_fresh_stock(db, as_of):
             (as_of + timedelta(days=365), 5),
         ],
     )
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
 
     refreshed_expired = db.query(SKUBatch).filter(SKUBatch.id == expired.id).first()
@@ -108,7 +108,7 @@ def test_expired_batch_is_skipped_in_favour_of_fresh_stock(db, as_of):
 
 def test_batch_expiring_exactly_on_the_business_date_is_allocatable(db, as_of):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of, 5)])
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
     refreshed = db.query(SKUBatch).filter(SKUBatch.id == batch.id).first()
     assert refreshed.reserved_quantity == 5
@@ -117,7 +117,7 @@ def test_batch_expiring_exactly_on_the_business_date_is_allocatable(db, as_of):
 def test_batch_expired_the_previous_day_is_not_allocatable(db, as_of):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of - timedelta(days=1), 5)])
     with pytest.raises(InsufficientStockError):
-        create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+        create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
 
 
 def test_expired_only_stock_says_expired_not_just_short(db, as_of):
@@ -125,7 +125,7 @@ def test_expired_only_stock_says_expired_not_just_short(db, as_of):
     warehouse was full of stock the allocator refuses on expiry grounds."""
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of - timedelta(days=1), 5)])
     with pytest.raises(InsufficientStockError) as excinfo:
-        create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+        create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     message = str(excinfo.value)
     assert "available 0" in message
     assert "expired" in message
@@ -137,7 +137,7 @@ def test_expired_only_stock_says_expired_not_just_short(db, as_of):
 
 def test_batch_without_expiry_date_is_allocatable(db, as_of):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(None, 5)])
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
     refreshed = db.query(SKUBatch).filter(SKUBatch.id == batch.id).first()
     assert refreshed.reserved_quantity == 5
@@ -152,7 +152,7 @@ def test_order_fails_and_reserves_nothing_when_only_expired_stock_remains(db, as
         ],
     )
     with pytest.raises(InsufficientStockError):
-        create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+        create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
 
     # The allocator's transactional_session rolls back on raise; assert the
     # undo explicitly rather than assuming it.
@@ -177,7 +177,7 @@ def test_fefo_order_is_preserved_among_non_expired_batches(db, as_of):
             (None, 3),
         ],
     )
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
 
     refreshed_expired = db.query(SKUBatch).filter(SKUBatch.id == expired.id).first()
@@ -193,7 +193,7 @@ def test_fefo_order_is_preserved_among_non_expired_batches(db, as_of):
 
 def test_allocated_quantities_are_exact_integers(db, as_of):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of + timedelta(days=10), 7)])
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
 
     order_item_batch = db.query(OrderItemBatch).first()
@@ -210,7 +210,7 @@ def test_allocated_quantities_are_exact_integers(db, as_of):
 
 def test_dispatch_refuses_a_batch_that_expired_after_reservation(db, as_of, monkeypatch):
     sku, warehouse, retailer, user, (batch,) = _seed(db, [(as_of + timedelta(days=5), 5)])
-    result = create_outgoing_order(db, _order(retailer, warehouse, sku, 5), user)
+    result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
 
     result.delivery_driver_id = 1

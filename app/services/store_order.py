@@ -227,8 +227,9 @@ def place_store_order(db: Session, user, payload) -> Order:
     merged = _merge_lines(payload.items)
     lines = _price_lines(db, merged)
 
-    # Cheap early refusal, before any lock is taken. Not the authority: the FOR UPDATE
-    # reservation inside create_outgoing_order decides, and its refusal is mapped below.
+    # The only stock check at checkout: create_outgoing_order no longer reserves (stock is
+    # blocked when the admin marks the order Ready to Ship), so this keeps a retailer from
+    # ordering more than is on hand. Pending orders do not reduce this figure.
     available = storefront_availability(db, list(merged))
     if any(line["quantity"] > _orderable_cap(available, line["sku"]) for line in lines):
         raise _stock_conflict(lines, available, only_short=True)

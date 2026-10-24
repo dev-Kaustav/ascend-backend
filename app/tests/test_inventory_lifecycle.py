@@ -9,8 +9,8 @@ Trigger table (04-CONTEXT.md `<baseline>`, confirmed by reading `update_order_st
 
 | Trigger                              | Function                        |
 |---------------------------------------|----------------------------------|
-| order creation (order lands PENDING)  | `_reserve_inventory_for_order`   |
-| PENDING -> READY_TO_SHIP              | (none — status write only)       |
+| order creation (order lands PENDING)  | (none — stock is not touched)    |
+| PENDING -> READY_TO_SHIP              | `_reserve_inventory_for_order`   |
 | READY_TO_SHIP -> OUT_FOR_DELIVERY     | `_dispatch_reserved_inventory`   |
 | OUT_FOR_DELIVERY -> DELIVERED         | (none)                           |
 | PENDING -> CANCELLED                  | `_release_reserved_inventory`    |
@@ -40,6 +40,8 @@ functions, direct model construction, the `db` fixture, no mocking, exact intege
 """
 import itertools
 
+import pytest
+
 from app.models import (
     Brand,
     Employee,
@@ -58,6 +60,7 @@ from app.models.enums import EmployeeRole, OrderStatus, TransactionType
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.services import inventory as inventory_service
 from app.services.order import (
+    InsufficientStockError,
     _dispatch_reserved_inventory,
     _release_reserved_inventory,
     _restore_dispatched_inventory,
@@ -190,11 +193,30 @@ def _cancel(db, order, current_user):
     db.refresh(order)
 
 
-def test_reserve_on_order_creation(db):
-    """Correction to CONCERNS.md:190: the OrderItemBatch row is written right here, at
-    order creation, not at PENDING -> READY_TO_SHIP."""
+def test_order_creation_reserves_nothing(db):
+    """Stock is blocked when the admin marks the order Ready to Ship, not when it is booked,
+    so creation writes no OrderItemBatch rows and moves no counter."""
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
+
+    inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
+    batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
+    assert inventory.reserved_quantity == 0
+    assert batch.reserved_quantity == 0
+    assert _order_item_batches(db, order.id) == []
+
+
+def test_an_order_can_be_booked_beyond_available_stock(db):
+    ids = _seed(db, batch_quantity=10)
+    order = _place_order(db, ids, quantity=25)
+
+    assert order.status == OrderStatus.PENDING
+
+
+def test_ready_to_ship_reserves_the_stock(db):
+    ids = _seed(db, batch_quantity=10)
+    order = _place_order(db, ids, quantity=4)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
@@ -209,16 +231,23 @@ def test_reserve_on_order_creation(db):
     assert db.query(InventoryTransaction).filter(InventoryTransaction.sku_id == ids["sku_id"]).count() == 0
 
 
-def test_ready_to_ship_moves_no_inventory(db):
-    """The other half of the CONCERNS.md:190 correction: this transition is a status write
-    and a delivery-driver check, nothing more."""
+def test_ready_to_ship_refuses_a_shortage_and_leaves_the_order_pending(db):
+    """The admin is the one who meets the shortage: the transition fails with the numbers,
+    and nothing is half-reserved."""
     ids = _seed(db, batch_quantity=10)
-    order = _place_order(db, ids, quantity=4)
+    order = _place_order(db, ids, quantity=25)
+    order.delivery_driver_id = ids["driver"].id
+    db.commit()
 
-    before = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
-    _ready_to_ship(db, order, ids["driver"], ids["admin"])
-    after = _snapshot(db, ids["sku_id"], ids["warehouse_id"], order.id)
-    assert before == after
+    with pytest.raises(InsufficientStockError) as excinfo:
+        update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), ids["admin"])
+    db.rollback()
+
+    assert "requested 25" in str(excinfo.value)
+    db.refresh(order)
+    assert order.status == OrderStatus.PENDING
+    assert db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first().reserved_quantity == 0
+    assert _order_item_batches(db, order.id) == []
 
 
 def test_dispatch_converts_reservation_into_a_shipment(db):
@@ -404,9 +433,9 @@ def test_dispatch_reentry_does_not_duplicate_allocation_rows(db):
     exercised here."""
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
+    _ready_to_ship(db, order, ids["driver"], ids["admin"])
     before_count = len(_order_item_batches(db, order.id))
 
-    _ready_to_ship(db, order, ids["driver"], ids["admin"])
     _dispatch(db, order, ids["admin"])
     after_count = len(_order_item_batches(db, order.id))
 

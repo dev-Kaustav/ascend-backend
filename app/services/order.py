@@ -699,8 +699,9 @@ def create_outgoing_order(
             changed_by_id=getattr(current_user, "id", None),
         ))
 
-        if _is_outgoing_order(db_order):
-            _reserve_inventory_for_order(db, db_order)
+        # Stock is NOT reserved here any more: an order can be booked whatever the stock, and
+        # the admin resolves shortages when they mark it Ready to Ship, which is where the
+        # reservation now happens (see update_order_status).
         _record_payment(db, db_order, payment_mode, payment_amount)
     return db_order
 
@@ -789,6 +790,11 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
         if not order.delivery_driver_id:
             raise ValueError("Delivery driver is required before marking ready to ship")
         order.status = OrderStatus.READY_TO_SHIP
+        # Stock is blocked at this admin step, not at order creation. A shortage refuses the
+        # transition with the SKU, warehouse and allocatable count, so the admin can fix it
+        # (receive stock, edit or cancel the order) before it ships.
+        if _is_outgoing_order(order):
+            _reserve_inventory_for_order(db, order)
     elif next_status == OrderStatus.OUT_FOR_DELIVERY:
         order.status = OrderStatus.OUT_FOR_DELIVERY
         _dispatch_reserved_inventory(db, order)
