@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
+from app.models import SKU, Brand, Warehouse
+from app.services.stock_ledger import TYPE_LABELS, export_stock_ledger_xlsx, get_stock_ledger
 from app.services.admin import (
     create_brand,
     create_warehouse,
@@ -215,6 +217,62 @@ def get_inventory_endpoint(
 ):
     items, total = get_inventory(db, limit=limit, offset=offset, warehouse_id=warehouse_id)
     return {"items": items, "total": total}
+
+def _ledger_filters(from_date, to_date, warehouse_id, brand_id, sku_id, transaction_type):
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "warehouse_id": warehouse_id,
+        "brand_id": brand_id,
+        "sku_id": sku_id,
+        "transaction_type": transaction_type,
+    }
+
+@router.get("/inventory/ledger")
+def get_stock_ledger_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_warehouse_manager),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    warehouse_id: int | None = Query(None, ge=1),
+    brand_id: int | None = Query(None, ge=1),
+    sku_id: int | None = Query(None, ge=1),
+    transaction_type: Literal["IN", "OUT", "RETURN"] | None = Query(None),
+):
+    return get_stock_ledger(db, **_ledger_filters(from_date, to_date, warehouse_id, brand_id, sku_id, transaction_type))
+
+@router.get("/inventory/ledger/export")
+def export_stock_ledger_endpoint(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_warehouse_manager),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    warehouse_id: int | None = Query(None, ge=1),
+    brand_id: int | None = Query(None, ge=1),
+    sku_id: int | None = Query(None, ge=1),
+    transaction_type: Literal["IN", "OUT", "RETURN"] | None = Query(None),
+):
+    def names(model, record_id):
+        return (db.query(model.name).filter(model.id == record_id).scalar() if record_id else None) or "All"
+
+    labels = {
+        "From": from_date or "Beginning",
+        "To": to_date or "Today",
+        "Warehouse": names(Warehouse, warehouse_id),
+        "Brand": names(Brand, brand_id),
+        "SKU": names(SKU, sku_id),
+        "Type": TYPE_LABELS.get(transaction_type, "All"),
+    }
+    output = export_stock_ledger_xlsx(
+        db, _ledger_filters(from_date, to_date, warehouse_id, brand_id, sku_id, transaction_type), labels
+    )
+    filename = f"stock_ledger_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 @router.get("/orders", response_model=OrderListPage)
 def get_orders_endpoint(

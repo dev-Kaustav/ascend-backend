@@ -181,7 +181,9 @@ def create_credit_note(db: Session, credit_note: CreditNoteCreate):
                     sku_id=item.sku_id,
                     warehouse_id=order.from_entity_id,
                     transaction_type=TransactionType.RETURN,
-                    quantity=item.quantity
+                    quantity=item.quantity,
+                    order_id=order.id,
+                    credit_note_id=db_credit_note.id
                 )
                 db.add(transaction)
 

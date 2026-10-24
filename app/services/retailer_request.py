@@ -73,16 +73,45 @@ def _own_pending(db: Session, request_id: int, current_user) -> RetailerRequest:
     return request
 
 
+# Approval workflow DISABLED (2026-10-24): salesmen create retailers directly so they can book
+# orders straight away. The request row is still written, already APPROVED and linked to the
+# new retailer, so who added which outlet stays on record. To restore the admin queue, swap
+# this function for the commented-out original below and re-enable the Requests tab in
+# ascend-frontend/components/workspaces/RetailersWorkspace.jsx.
 def create_request(db: Session, payload: RetailerRequestCreate, current_user) -> RetailerRequest:
-    request = RetailerRequest(
-        requested_by_employee_id=_salesman_employee_id(current_user),
-        status=RetailerRequestStatus.PENDING.value,
-        **{field: getattr(payload, field) for field in REQUEST_FIELDS},
-    )
-    db.add(request)
-    db.commit()
+    employee_id = _salesman_employee_id(current_user)
+    with transactional_session(db):
+        retailer = Retailer(
+            **{field: getattr(payload, field) for field in REQUEST_FIELDS},
+            assigned_salesman_id=employee_id,
+            beat_id=None,
+        )
+        db.add(retailer)
+        db.flush()
+        request = RetailerRequest(
+            requested_by_employee_id=employee_id,
+            status=RetailerRequestStatus.APPROVED.value,
+            created_retailer_id=retailer.id,
+            reviewed_by_user_id=current_user.id,
+            reviewed_at=datetime.now(timezone.utc),
+            review_note="Created directly by salesman",
+            **{field: getattr(payload, field) for field in REQUEST_FIELDS},
+        )
+        db.add(request)
     db.refresh(request)
     return request
+
+
+# def create_request(db: Session, payload: RetailerRequestCreate, current_user) -> RetailerRequest:
+#     request = RetailerRequest(
+#         requested_by_employee_id=_salesman_employee_id(current_user),
+#         status=RetailerRequestStatus.PENDING.value,
+#         **{field: getattr(payload, field) for field in REQUEST_FIELDS},
+#     )
+#     db.add(request)
+#     db.commit()
+#     db.refresh(request)
+#     return request
 
 
 def list_requests(db: Session, current_user, status: str | None = None):

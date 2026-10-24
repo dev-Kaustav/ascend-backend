@@ -431,7 +431,8 @@ def _dispatch_reserved_inventory(db: Session, order: Order):
                 warehouse_id=warehouse_id,
                 batch_id=batch.id,
                 transaction_type=TransactionType.OUT,
-                quantity=reserved.quantity
+                quantity=reserved.quantity,
+                order_id=order.id
             ))
 
 def _release_reserved_inventory(db: Session, order: Order):
@@ -497,7 +498,8 @@ def _restore_dispatched_inventory(db: Session, order: Order):
                 warehouse_id=warehouse_id,
                 batch_id=batch_link.batch_id,
                 transaction_type=TransactionType.RETURN,
-                quantity=batch_link.quantity
+                quantity=batch_link.quantity,
+                order_id=order.id
             )
             db.add(transaction)
 

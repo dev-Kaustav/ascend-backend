@@ -309,7 +309,8 @@ def add_inventory_receipt(db: Session, receipt: InventoryReceiptCreate):
                 warehouse_id=receipt.warehouse_id,
                 batch_id=db_batch.id,
                 transaction_type=TransactionType.IN,
-                quantity=item.quantity
+                quantity=item.quantity,
+                order_id=db_order.id
             )
             db.add(transaction)
     return db_order

@@ -5,6 +5,8 @@ the assertions that matter most here are the negative ones: nothing exists in `r
 an admin approves, and a salesman cannot approve anything — least of all their own request.
 """
 
+import pytest
+
 from app.core.security import create_access_token, get_password_hash
 from app.models import Employee, Retailer, RetailerRequest, User
 from app.models.enums import EmployeeRole
@@ -34,12 +36,18 @@ def _admin(db):
     return {"Authorization": f"Bearer {token}"}
 
 
+# The admin approval queue is switched off (salesmen now create retailers directly — see
+# create_request). The queue tests are kept, skipped, for when it is switched back on.
+queue_disabled = pytest.mark.skip(reason="retailer approval workflow disabled; salesmen create retailers directly")
+
+
 def _submit(client, headers, name="Corner Store", **extra):
     payload = {"name": name, "city": "Delhi", "state": "Delhi"}
     payload.update(extra)
     return client.post("/retailer-requests", json=payload, headers=headers)
 
 
+@queue_disabled
 def test_pending_request_creates_no_retailer(client, db):
     _, headers = _salesman(db, "Ravi")
 
@@ -52,6 +60,7 @@ def test_pending_request_creates_no_retailer(client, db):
     assert db.query(Retailer).count() == 0
 
 
+@queue_disabled
 def test_approval_creates_one_retailer_owned_by_the_requester(client, db):
     employee, headers = _salesman(db, "Ravi")
     admin_headers = _admin(db)
@@ -70,6 +79,7 @@ def test_approval_creates_one_retailer_owned_by_the_requester(client, db):
     assert response.json()["created_retailer_id"] == retailers[0].id
 
 
+@queue_disabled
 def test_a_request_can_only_be_decided_once(client, db):
     _, headers = _salesman(db, "Ravi")
     admin_headers = _admin(db)
@@ -84,6 +94,7 @@ def test_a_request_can_only_be_decided_once(client, db):
     assert client.post(f"/retailer-requests/{request_id}/reject", json={}, headers=admin_headers).status_code == 409
 
 
+@queue_disabled
 def test_rejection_records_the_note_and_creates_nothing(client, db):
     _, headers = _salesman(db, "Ravi")
     admin_headers = _admin(db)
@@ -101,6 +112,7 @@ def test_rejection_records_the_note_and_creates_nothing(client, db):
     assert db.query(Retailer).count() == 0
 
 
+@queue_disabled
 def test_salesman_cannot_approve_anything(client, db):
     _, headers = _salesman(db, "Ravi")
     request_id = _submit(client, headers).json()["id"]
@@ -129,6 +141,7 @@ def test_requests_are_scoped_to_their_owner(client, db):
     assert {row["requested_by_name"] for row in all_rows} == {"Ravi", "Neha"}
 
 
+@queue_disabled
 def test_owner_can_edit_and_withdraw_while_pending(client, db):
     _, headers = _salesman(db, "Ravi")
     request_id = _submit(client, headers).json()["id"]
@@ -165,6 +178,7 @@ def test_salesman_without_employee_record_cannot_file(client, db):
     assert _submit(client, headers).status_code == 403
 
 
+@queue_disabled
 def test_coordinates_captured_at_the_shop_door_survive_approval(client, db):
     """The salesman is the only person who will ever be standing at the new shop. If the
     coordinates they captured there did not reach the retailer row, someone would have to
@@ -183,6 +197,7 @@ def test_coordinates_captured_at_the_shop_door_survive_approval(client, db):
     assert (retailer.latitude, retailer.longitude) == (12.9716, 77.5946)
 
 
+@queue_disabled
 def test_a_request_without_coordinates_is_still_a_valid_request(client, db):
     """Location permission denied, or filed from a desk. The outlet-finder backfills a missing
     pin on the first delivery, so this is a state the system already knows how to leave."""
@@ -197,6 +212,7 @@ def test_a_request_without_coordinates_is_still_a_valid_request(client, db):
     assert retailer.latitude is None and retailer.longitude is None
 
 
+@queue_disabled
 def test_a_salesman_can_correct_coordinates_while_the_request_is_pending(client, db):
     """They walked in before the fix settled and want to redo it from the doorway."""
     _, headers = _salesman(db, "Ravi")
@@ -211,3 +227,30 @@ def test_a_salesman_can_correct_coordinates_while_the_request_is_pending(client,
     assert response.status_code == 200
     assert response.json()["latitude"] == 12.9716
     assert db.get(RetailerRequest, request_id).longitude == 77.5946
+
+
+def test_salesman_creates_an_orderable_retailer_directly(client, db):
+    employee, headers = _salesman(db, "Ravi")
+
+    response = _submit(client, headers, name="Direct Store", latitude=12.9716, longitude=77.5946)
+
+    assert response.status_code == 200
+    body = response.json()
+    retailer = db.query(Retailer).one()
+    assert retailer.name == "Direct Store"
+    assert retailer.assigned_salesman_id == employee.id
+    assert retailer.beat_id is None
+    assert (retailer.latitude, retailer.longitude) == (12.9716, 77.5946)
+    # The request row stays as the record of who added the outlet.
+    assert body["status"] == "APPROVED"
+    assert body["created_retailer_id"] == retailer.id
+
+
+def test_a_directly_created_retailer_is_in_the_salesmans_order_picker(client, db):
+    _, headers = _salesman(db, "Ravi")
+    retailer_id = _submit(client, headers, name="Bookable Store").json()["created_retailer_id"]
+
+    response = client.get("/orders/lookups", headers=headers)
+
+    assert response.status_code == 200
+    assert retailer_id in {row["id"] for row in response.json()["retailers"]}
