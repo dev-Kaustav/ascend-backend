@@ -1,7 +1,8 @@
 from datetime import datetime, date, timedelta
 from io import BytesIO
 import re
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
+from sqlalchemy import select as db_select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, load_only, aliased
 from openpyxl import Workbook
@@ -462,8 +463,19 @@ def _apply_order_filters(
             query = query.filter(Order.payment_status == PaymentStatus(payment_status))
         except ValueError:
             pass
+    search = (search or "").strip()
     if search:
-        query = query.filter(Order.invoice.has(Invoice.invoice_number.ilike(f"%{search}%")))
+        # Invoice number, retailer name, or the order number itself (with or without a leading #).
+        pattern = f"%{search}%"
+        retailer_ids = db_select(Retailer.id).where(Retailer.name.ilike(pattern))
+        matches = [
+            Order.invoice.has(Invoice.invoice_number.ilike(pattern)),
+            and_(Order.to_entity_type == "RETAILER", Order.to_entity_id.in_(retailer_ids)),
+        ]
+        digits = search.lstrip("#")
+        if digits.isdigit():
+            matches.append(Order.id == int(digits))
+        query = query.filter(or_(*matches))
     if has_invoice is True:
         query = query.filter(Order.invoice.has())
     if has_invoice is False:

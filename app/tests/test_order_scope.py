@@ -321,3 +321,20 @@ def test_confirmed_retailer_keeps_scoped_access_to_their_own_orders(client, db):
     assert client.get(f"/orders/{data['other_order'].id}", headers=headers).status_code == 403
     res = client.patch(f"/orders/{order_id}/status", headers=headers, json={"status": "CANCELLED"})
     assert res.status_code == 200, res.text
+
+
+def test_salesman_order_search_matches_shop_name_and_order_number_within_scope(client, db):
+    data = _scope_fixture(db)
+    headers = _headers(data["salesman"])
+    assigned, other = data["assigned_order"], data["other_order"]
+
+    def ids(search):
+        response = client.get("/orders", params={"search": search}, headers=headers)
+        assert response.status_code == 200
+        return [item["id"] for item in response.json()["items"]]
+
+    assert ids("assigned retailer") == [assigned.id]
+    assert ids(f"#{assigned.id}") == [assigned.id]
+    # Another salesman's shop never leaks through search.
+    assert ids("other retailer") == []
+    assert ids(str(other.id)) == []
