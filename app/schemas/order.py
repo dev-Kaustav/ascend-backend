@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 from decimal import Decimal
 from uuid import UUID
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 
 class OrderItemTaxCreate(BaseModel):
@@ -38,6 +38,8 @@ class CashCollectionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2, allow_inf_nan=False)
     collection_id: UUID
+    # How the salesman was paid. Defaults to cash, which is all older clients send.
+    payment_mode: Literal["CASH", "UPI", "CHEQUE"] = "CASH"
 
 
 class OrderItemTaxResponse(BaseModel):
@@ -52,6 +54,9 @@ class OrderItemResponse(BaseModel):
     sku_id: int
     sku_name: Optional[str] = None
     hsn_code: Optional[str] = None
+    # The SKU's pack, so an app can show "3 ladi" for 36 pieces.
+    pack_type: Optional[str] = None
+    units_per_pack: Optional[int] = None
     quantity: float
     unit_price: float
     discount_amount: float

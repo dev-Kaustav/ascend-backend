@@ -142,11 +142,32 @@ def test_other_roles_cannot_use_salesman_cash_endpoint(db, client, cash_order, r
     assert db.query(Account).count() == 0
 
 
-def test_request_cannot_spoof_collector_or_payment_mode(db, client, cash_order):
+def test_request_cannot_spoof_collector(db, client, cash_order):
     response = client.post(
         f"/orders/{cash_order['order'].id}/cash-collections",
-        json={"amount": "10.00", "collection_id": str(uuid4()), "collected_by_id": cash_order["other"].employee_id, "payment_mode": "UPI"},
+        json={"amount": "10.00", "collection_id": str(uuid4()), "collected_by_id": cash_order["other"].employee_id},
         headers=headers(cash_order["user"]),
     )
     assert response.status_code == 422
     assert db.query(Account).count() == 0
+
+
+@pytest.mark.parametrize("mode", ["UPI", "CHEQUE"])
+def test_salesman_can_record_upi_or_cheque(db, client, cash_order, mode):
+    response = client.post(
+        f"/orders/{cash_order['order'].id}/cash-collections",
+        json={"amount": "25.00", "collection_id": str(uuid4()), "payment_mode": mode},
+        headers=headers(cash_order["user"]),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["payment_mode"] == mode
+    assert get_order_detail(db, cash_order["order"].id, cash_order["user"])["pending_amount"] == 75
+
+
+def test_unknown_payment_mode_is_rejected(db, client, cash_order):
+    response = client.post(
+        f"/orders/{cash_order['order'].id}/cash-collections",
+        json={"amount": "25.00", "collection_id": str(uuid4()), "payment_mode": "ONLINE"},
+        headers=headers(cash_order["user"]),
+    )
+    assert response.status_code == 422

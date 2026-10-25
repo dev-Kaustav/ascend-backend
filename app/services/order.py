@@ -556,7 +556,7 @@ def record_salesman_cash(db: Session, order_id: int, collection, current_user):
             return existing
         if order.status == OrderStatus.CANCELLED:
             raise ValueError("Cannot collect cash for a cancelled order")
-        _record_payment(db, order, "CASH", collection.amount)
+        _record_payment(db, order, collection.payment_mode, collection.amount)
         payment = order.payments[-1]
         payment.transaction_reference = reference
         payment.collected_by_id = current_user.employee_id
@@ -564,7 +564,11 @@ def record_salesman_cash(db: Session, order_id: int, collection, current_user):
         db.add(OrderTrail(
             order_id=order.id,
             order_status=order.status,
-            description=f"Cash collected: INR {collection.amount:.2f}",
+            description=(
+                f"Cash collected: INR {collection.amount:.2f}"
+                if collection.payment_mode == "CASH"
+                else f"{collection.payment_mode.title()} payment received: INR {collection.amount:.2f}"
+            ),
             changed_by_id=current_user.id,
         ))
     return payment
@@ -871,6 +875,8 @@ def _serialize_order(db: Session, order: Order) -> dict:
             "sku_name": sku.name if sku else None,
             "sku_code": sku.code if sku else None,
             "hsn_code": sku.hsn_code if sku else None,
+            "pack_type": sku.pack_type if sku else None,
+            "units_per_pack": sku.units_per_pack if sku else None,
             "quantity": _round_money(item.quantity),
             "unit_price": _round_money(item.unit_price),
             "discount_amount": _round_money(item.discount_amount),
