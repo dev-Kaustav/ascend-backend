@@ -119,10 +119,12 @@ def create_retailer_endpoint(
 def create_sku_endpoint(
     sku: SKUCreate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles("ADMIN", "WAREHOUSE_MANAGER", "ACCOUNTANT")),
+    # The only role check for SKU creation. Accountants were let through here and then refused
+    # by the service; the service check is gone and the refusal is now a plain 403.
+    current_user = Depends(require_roles("ADMIN", "WAREHOUSE_MANAGER")),
 ):
     try:
-        return create_sku(db, sku, current_user)
+        return create_sku(db, sku)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

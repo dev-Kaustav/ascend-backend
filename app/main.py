@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.errors import install_error_handlers
 from app.routers import auth, admin, orders, accounting, bill_labels, imports, dashboard_api, outlet_finder, retailer_requests, landing_leads, store
 
 app = FastAPI(title="Ascend Foods Backend")
@@ -14,6 +15,10 @@ def _load_cors_origins():
     return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 cors_origins = _load_cors_origins()
+
+# Before CORS: Starlette makes the last-added middleware the outermost, and error responses must
+# pass back through CORS to be readable by the browser.
+install_error_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,

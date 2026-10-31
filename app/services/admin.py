@@ -85,17 +85,19 @@ def create_retailer(db: Session, retailer: RetailerCreate):
     db.refresh(db_retailer)
     return db_retailer
 
-def create_sku(db: Session, sku: SKUCreate, current_user=None):
-    if current_user:
-        role_value = getattr(current_user.role, "value", None) or getattr(current_user, "role", None)
-        if role_value not in {"ADMIN", "WAREHOUSE_MANAGER"}:
-            raise ValueError("Only admins or warehouse managers can create SKUs")
+def create_sku(db: Session, sku: SKUCreate):
+    _assert_brand_exists(db, sku.brand_id)
     _assert_category_exists(db, sku.category_id)
-    db_sku = SKU(**sku.dict())
+    db_sku = SKU(**sku.model_dump())
     db.add(db_sku)
     db.commit()
     db.refresh(db_sku)
     return db_sku
+
+def _assert_brand_exists(db: Session, brand_id):
+    if not db.query(Brand.id).filter(Brand.id == brand_id).first():
+        raise ValueError("Brand not found")
+
 
 def _assert_category_exists(db: Session, category_id):
     # The FK alone does not catch this under the SQLite test harness (no PRAGMA foreign_keys).
@@ -176,9 +178,8 @@ def update_sku(db: Session, sku_id: int, payload: SKUUpdate):
     if not sku:
         raise RecordNotFoundError("SKU not found")
     data = payload.model_dump(exclude_unset=True)
-    if "brand_id" in data and data["brand_id"] is not None:
-        if not db.query(Brand).filter(Brand.id == data["brand_id"]).first():
-            raise ValueError("Brand not found")
+    if data.get("brand_id") is not None:
+        _assert_brand_exists(db, data["brand_id"])
     if "category_id" in data:
         _assert_category_exists(db, data["category_id"])
     return _apply_update(db, sku, payload)

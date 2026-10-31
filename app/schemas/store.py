@@ -33,6 +33,7 @@ class StoreProduct(BaseModel):
     brand: StoreBrand
     category: StoreCategory
     image_url: Optional[str] = None
+    image_urls: list[str] = []
     pack_size: Optional[str] = None
     # Quantities are pieces; the storefront steps them by units_per_pack (a ladi), 1 for loose pieces.
     pack_type: Optional[str] = None

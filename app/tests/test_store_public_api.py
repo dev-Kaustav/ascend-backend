@@ -17,7 +17,7 @@ from app.tests.store_helpers import (
     stocked_sku,
 )
 
-ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "pack_size", "units_per_pack", "mrp", "trade_price", "in_stock"}
+ANON_KEYS = {"id", "code", "name", "brand", "category", "image_url", "image_urls", "pack_size", "units_per_pack", "mrp", "trade_price", "in_stock"}
 
 
 def _peanut(db, warehouse, brand, category, **overrides):
@@ -57,6 +57,7 @@ def test_anonymous_lists_visible_products_with_mrp_and_in_stock_flag(client, db)
             "brand": {"id": brand.id, "name": "Jabsons"},
             "category": {"id": category.id, "name": "Roasted Nuts & Seeds", "icon_url": "https://jabsons.com/cdn/nuts.png"},
             "image_url": "https://jabsons.com/cdn/x.webp",
+            "image_urls": ["https://jabsons.com/cdn/x.webp"],
             "pack_size": "23 g",
             "units_per_pack": 1,
             "mrp": 8.0,

@@ -1,7 +1,8 @@
 import re
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
+from pydantic.fields import FieldInfo
 from typing import Optional
 from datetime import datetime, date
 from decimal import Decimal
@@ -10,6 +11,7 @@ from app.models.enums import INDIAN_STATES
 
 
 MAX_URL_LENGTH = 2048
+MAX_EXTRA_IMAGES = 3  # plus the cover image_url: four product images in all
 PACK_TYPES = ("box", "case", "ladi")
 
 
@@ -226,6 +228,16 @@ class RetailerBeatUpdate(BaseModel):
     # remove the retailer from its beat. This endpoint does one thing.
     beat_id: Optional[int] = None
 
+def _all_optional(model: type[BaseModel], name: str) -> type[BaseModel]:
+    """A partial-update twin of `model`: an omitted key means "leave alone". Subclassing keeps the
+    validators, and Pydantic skips validating defaults, so an omitted field never trips one."""
+    fields = {
+        field: (Optional[info.annotation], FieldInfo.merge_field_infos(info, default=None))
+        for field, info in model.model_fields.items()
+    }
+    return create_model(name, __base__=model, **fields)
+
+
 class SKUCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: str
@@ -244,12 +256,15 @@ class SKUCreate(BaseModel):
     igst_percent: float
     igst_amount: float
     amount: float
-    weight: float
-    length_cm: float
-    width_cm: float
-    height_cm: float
+    # Not every SKU is measured; blank means unknown.
+    weight: Optional[float] = None
+    length_cm: Optional[float] = None
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
     # Storefront catalogue data (STORE-07). All optional so existing callers are unaffected.
     image_url: Optional[str] = None
+    # Images 2-4 of the storefront carousel. Blanks are dropped, so ["", "https://a"] stores one.
+    extra_image_urls: Optional[list[Optional[str]]] = Field(default=None, max_length=MAX_EXTRA_IMAGES)
     category_id: Optional[int] = None
     net_weight_g: Optional[int] = Field(default=None, ge=1)
     pack_type: Optional[str] = None
@@ -259,6 +274,14 @@ class SKUCreate(BaseModel):
     @classmethod
     def validate_image_url(cls, value):
         return validate_https_url(value)
+
+    @field_validator("extra_image_urls")
+    @classmethod
+    def validate_extra_image_urls(cls, values):
+        if values is None:
+            return None
+        urls = [url for url in (validate_https_url(value) for value in values) if url]
+        return urls or None
 
     @field_validator("pack_type")
     @classmethod
@@ -289,34 +312,15 @@ class SKUResponse(BaseModel):
     width_cm: Optional[float]
     height_cm: Optional[float]
     image_url: Optional[str] = None
+    extra_image_urls: Optional[list[str]] = None
     category_id: Optional[int] = None
     net_weight_g: Optional[int] = None
     pack_type: Optional[str] = None
     units_per_pack: Optional[int] = None
 
-class SKUUpdate(SKUCreate):
-    model_config = ConfigDict(extra="ignore")
-    name: Optional[str] = None
-    code: Optional[str] = None
-    brand_id: Optional[int] = None
-    hsn_code: Optional[str] = None
-    distributor_landing_price: Optional[float] = None
-    mrp: Optional[float] = None
-    discount_amount: Optional[float] = None
-    discount_percent: Optional[float] = None
-    rate: Optional[float] = None
-    sgst_percent: Optional[float] = None
-    sgst_amount: Optional[float] = None
-    cgst_percent: Optional[float] = None
-    cgst_amount: Optional[float] = None
-    igst_percent: Optional[float] = None
-    igst_amount: Optional[float] = None
-    amount: Optional[float] = None
-    weight: Optional[float] = None
-    length_cm: Optional[float] = None
-    width_cm: Optional[float] = None
-    height_cm: Optional[float] = None
-
+# Every SKUCreate field, optional and defaulting to None, with its constraints and validators kept.
+# Generated rather than restated so a new SKU column cannot be missed here.
+SKUUpdate = _all_optional(SKUCreate, "SKUUpdate")
 
 class CategoryCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")

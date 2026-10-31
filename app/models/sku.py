@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Float, Numeric
+from sqlalchemy import JSON, CheckConstraint, Column, Integer, String, ForeignKey, Float, Numeric
 
 from app.db.base import Base
 
@@ -38,6 +38,9 @@ class SKU(Base):
 
     # Storefront catalogue data (STORE-07). image_url is https-only (validated at the schema).
     image_url = Column(String(2048))
+    # Images 2-4 of the product page carousel, in order. image_url stays the cover and the only
+    # image every list, cart and order thumbnail uses. Same https-only rule, at the schema.
+    extra_image_urls = Column(JSON)
     category_id = Column(
         Integer,
         ForeignKey("categories.id", ondelete="SET NULL", name="fk_skus_category_id_categories"),

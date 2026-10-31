@@ -82,6 +82,8 @@ def _product_dict(sku: SKU, brand: Brand, category: Category, available: int) ->
         "brand": {"id": brand.id, "name": brand.name},
         "category": {"id": category.id, "name": category.name, "icon_url": category.icon_url},
         "image_url": sku.image_url,
+        # The product page carousel: the cover first, then images 2-4. Empty when there is no cover.
+        "image_urls": [sku.image_url, *(sku.extra_image_urls or [])] if sku.image_url else [],
         "pack_size": pack_size_label(sku.net_weight_g),
         "pack_type": sku.pack_type,
         "units_per_pack": pack_units(sku),
