@@ -818,7 +818,14 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
             if requested_payment_status == PaymentStatus.CREDIT:
                 order.payment_status = PaymentStatus.CREDIT if not order.payments else order.payment_status
             elif requested_payment_status in {PaymentStatus.PAID, PaymentStatus.PARTIAL}:
-                _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
+                # Already settled before delivery (e.g. salesman cash collection): "Paid" with no
+                # amount means nothing left to collect, not a zero-rupee payment to refuse.
+                if calculate_order_outstanding(order) <= 0:
+                    if status.payment_amount:
+                        raise ValueError("Order is already fully paid")
+                    order.payment_status = PaymentStatus.PAID
+                else:
+                    _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
         elif status.payment_amount is not None:
             _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
     elif next_status == OrderStatus.CANCELLED:
