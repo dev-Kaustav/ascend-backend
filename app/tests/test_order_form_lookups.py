@@ -263,3 +263,50 @@ def test_a_salesman_cannot_attribute_an_order_to_another_salesman(db, client, lo
     )
     assert response.status_code == 200, response.text
     assert response.json()["salesman_id"] == salesman.id
+
+
+@pytest.mark.parametrize("payment", [
+    {},
+    {"payment_mode": "CASH"},
+    {"payment_mode": "UPI", "payment_amount": None},
+    {"payment_mode": "CASH", "payment_amount": 0},
+    {"payment_mode": "CREDIT", "payment_amount": None},
+])
+def test_salesman_can_book_on_credit_without_an_amount_received(db, client, lookups_fixture, payment):
+    from app.models import Account
+
+    salesman = lookups_fixture["salesman"]
+    headers = _headers(_user(db, "SALESMAN", employee_id=salesman.id))
+    offered = client.get("/orders/lookups", headers=headers).json()
+    response = client.post("/orders", headers=headers, json={
+        "retailer_id": offered["retailers"][0]["id"],
+        "warehouse_id": lookups_fixture["warehouse"].id,
+        "items": [{"sku_id": lookups_fixture["sku"].id, "quantity": 2, "unit_price": 50}],
+        **payment,
+    })
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["payment_status"] == "CREDIT"
+    assert created["salesman_id"] == salesman.id
+    assert db.query(Account).filter(Account.order_id == created["id"]).count() == 0
+    detail = client.get(f"/orders/{created['id']}", headers=headers).json()
+    assert detail["pending_amount"] == 100
+
+
+@pytest.mark.parametrize("received,status", [(40, "PARTIAL"), (100, "PAID")])
+def test_salesman_receipt_is_recorded_only_when_an_amount_is_entered(db, client, lookups_fixture, received, status):
+    from app.models import Account
+
+    headers = _headers(_user(db, "SALESMAN", employee_id=lookups_fixture["salesman"].id))
+    offered = client.get("/orders/lookups", headers=headers).json()
+    response = client.post("/orders", headers=headers, json={
+        "retailer_id": offered["retailers"][0]["id"],
+        "warehouse_id": lookups_fixture["warehouse"].id,
+        "items": [{"sku_id": lookups_fixture["sku"].id, "quantity": 2, "unit_price": 50}],
+        "payment_mode": "CASH", "payment_amount": received,
+    })
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["payment_status"] == status
+    payments = db.query(Account).filter(Account.order_id == created["id"]).all()
+    assert len(payments) == 1 and payments[0].amount == received

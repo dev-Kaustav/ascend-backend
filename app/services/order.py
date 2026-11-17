@@ -671,6 +671,9 @@ def create_outgoing_order(
     inter_state = _is_inter_state(warehouse, retailer)
     payment_mode = (order.payment_mode or "").strip().upper()
     payment_amount = order.payment_amount
+    # Booking on credit is the salesman's default; an unfilled receipt is never a payment.
+    if role_value == "SALESMAN" and (payment_amount is None or payment_amount == 0):
+        payment_mode = "CREDIT"
 
     with transactional_session(db):
         db_order = Order(
