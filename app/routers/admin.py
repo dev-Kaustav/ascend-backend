@@ -221,6 +221,17 @@ def get_inventory_endpoint(
     items, total = get_inventory(db, limit=limit, offset=offset, warehouse_id=warehouse_id)
     return {"items": items, "total": total}
 
+@router.get("/inventory/overview")
+def inventory_overview_endpoint(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_warehouse_manager),
+    warehouse_id: int | None = Query(None, ge=1),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+):
+    from app.services.metrics import stock_overview
+    return stock_overview(db, warehouse_id=warehouse_id, from_date=from_date, to_date=to_date)
+
 def _ledger_filters(from_date, to_date, warehouse_id, brand_id, sku_id, transaction_type):
     return {
         "from_date": from_date,

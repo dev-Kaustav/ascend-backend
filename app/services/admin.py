@@ -435,7 +435,6 @@ _parse_date = metrics.parse_date
 
 # "Money still owed": a filter value of its own because an order can owe in three payment states.
 PAYMENT_DUE = "DUE"
-_PAYMENT_DUE_STATUSES = metrics.PAYMENT_DUE_STATUSES
 
 
 def _apply_order_filters(
@@ -465,7 +464,7 @@ def _apply_order_filters(
         # Cancelled orders count for nothing: a list shows them only when asked for by status.
         query = query.filter(Order.status != OrderStatus.CANCELLED)
     if payment_status == PAYMENT_DUE:
-        query = query.filter(Order.payment_status.in_(_PAYMENT_DUE_STATUSES))
+        query = metrics.payment_due_query(query)
     elif payment_status:
         try:
             query = query.filter(Order.payment_status == PaymentStatus(payment_status))
@@ -854,13 +853,11 @@ def get_order_status_summary(
         summary[key] = count
     # Every order that is not cancelled: what the "All" list shows.
     summary["ALL"] = sum(count for key, count in summary.items() if key != OrderStatus.CANCELLED.value)
-    # Delivered but not fully paid: the collections queue on the orders screen.
-    summary["PAYMENT_DUE"] = (
-        q.filter(Order.status == OrderStatus.DELIVERED, Order.payment_status.in_(_PAYMENT_DUE_STATUSES))
-        .with_entities(func.count(Order.id))
-        .scalar()
-        or 0
-    )
+    # The same positive balances as Total outstanding, across every non-cancelled status.
+    summary["PAYMENT_DUE"] = metrics.outstanding_orders_query(
+        db, from_date=from_date, to_date=to_date, salesman_id=salesman_id
+    ).count()
+
     return summary
 
 def list_users(db: Session):

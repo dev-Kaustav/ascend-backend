@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -91,8 +91,8 @@ def _auth_header_for(db, role: EmployeeRole) -> dict[str, str]:
 def test_parse_bound_builds_half_open_range_and_rejects_bad_input():
     assert _parse_bound(None, is_end=False) is None
     assert _parse_bound("", is_end=True) is None
-    assert _parse_bound("2026-02-03", is_end=False) == datetime(2026, 2, 3)
-    assert _parse_bound("2026-02-03", is_end=True) == datetime(2026, 2, 4)
+    assert _parse_bound("2026-02-03", is_end=False) == datetime(2026, 2, 2, 18, 30, tzinfo=timezone.utc)
+    assert _parse_bound("2026-02-03", is_end=True) == datetime(2026, 2, 3, 18, 30, tzinfo=timezone.utc)
 
     with pytest.raises(ValueError, match="Invalid date 'not-a-date'.*YYYY-MM-DD"):
         _parse_bound("not-a-date", is_end=False)
@@ -111,6 +111,7 @@ def test_empty_planned_set_has_undefined_ratio_and_visible_excluded_count(db):
         "billed": 0,
         "coverage_percent": None,
         "retailers_without_beat": 1,
+        "activity": {"retailers": [], "monthly": []},
         "by_beat": [],
         "by_salesman": [],
     }
@@ -218,9 +219,9 @@ def test_date_range_includes_both_named_days_and_excludes_next_midnight(db):
     on_start = _retailer(db, "On Start", beat=beat)
     on_end = _retailer(db, "On End", beat=beat)
     after_end = _retailer(db, "After End", beat=beat)
-    _order(db, on_start, warehouse, created_at=datetime(2026, 2, 3, 0, 0))
-    _order(db, on_end, warehouse, created_at=datetime(2026, 2, 4, 23, 59, 59))
-    _order(db, after_end, warehouse, created_at=datetime(2026, 2, 5, 0, 0))
+    _order(db, on_start, warehouse, created_at=datetime(2026, 2, 2, 18, 30))
+    _order(db, on_end, warehouse, created_at=datetime(2026, 2, 4, 18, 29, 59))
+    _order(db, after_end, warehouse, created_at=datetime(2026, 2, 4, 18, 30))
     db.commit()
 
     result = get_coverage(db, from_date="2026-02-03", to_date="2026-02-04")

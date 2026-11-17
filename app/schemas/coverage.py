@@ -34,5 +34,6 @@ class CoverageResponse(BaseModel):
     # A ratio with no planned outlets is undefined, not a measured zero.
     coverage_percent: Optional[float]
     retailers_without_beat: int
+    activity: dict
     by_beat: list[CoverageBeatRow]
     by_salesman: list[CoverageSalesmanRow]

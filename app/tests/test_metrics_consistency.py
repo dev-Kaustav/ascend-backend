@@ -62,7 +62,7 @@ def _seed(db):
 
 def test_what_shops_owe_is_the_same_on_every_screen(db):
     _seed(db)
-    owed = 150.0 + 120.0  # the part-paid order's balance and the credit order; nothing else owes
+    owed = 150.0 + 120.0 + 40.0  # includes pending orders; cancelled balances never count
 
     rows, _ = get_outstanding_orders(db)
     assert get_outstanding_summary(db)["total_outstanding"] == owed
@@ -113,3 +113,25 @@ def test_the_sql_order_total_matches_the_invoice_arithmetic(db):
     )
     for order in db.query(Order):
         assert round(float(sql_totals[order.id]), 2) == float(calculate_order_totals(order)["grand_total"])
+
+
+def test_coverage_activity_and_payment_days_use_live_server_totals(db):
+    _seed(db)
+    activity = metrics.retailer_activity(db)
+    assert len(activity["retailers"]) == 1
+    assert activity["retailers"][0]["orders"] == 4
+    assert activity["retailers"][0]["total"] == 459.99
+    assert activity["monthly"] == [{"label": "2026-11", "value": 1}]
+    assert metrics.payment_days(db) == [{"date": "2026-11-10", "amount": 149.99}]
+    assert metrics.payment_days(db, "2026-12-01") == []
+
+
+def test_dashboard_breakdown_reconciles_to_total_and_excludes_cancelled_money(db):
+    _seed(db)
+    summary = metrics.outstanding_summary(db)
+    assert {row["key"]: row["amount"] for row in summary["breakdown"]} == {"dispatched": 270, "pending": 40}
+    assert sum(row["amount"] for row in summary["breakdown"]) == summary["total_outstanding"]
+    recon = summary["reconciliation"]
+    assert recon["order_value"] == Decimal("459.99")
+    assert recon["collected"] == Decimal("149.99")
+    assert recon["order_value"] - recon["collected"] - recon["credits"] + recon["excess_payments"] == summary["total_outstanding"]

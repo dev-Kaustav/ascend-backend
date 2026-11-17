@@ -14,12 +14,9 @@ that cares about elapsed time freezes it via `monkeypatch.setattr("app.services.
 datetime", _FrozenDateTime)` -- a `datetime` subclass, not a stub, because `_parse_date` also
 calls `datetime.combine` and `datetime.min` through the same name.
 
-RPT-06 (the naive/aware `datetime.utcnow() - order.created_at` crash under real PostgreSQL)
-was FIXED in `outstanding.py` ahead of this module, per Phase 5 coordinator ruling R5
-(05-CONTEXT.md), which overrides D5 for that one defect only -- see
-`app/tests/test_outstanding_pg.py` for the real-PostgreSQL proof. RPT-07 (the `total`/
-`len(items)` mismatch) is a separate, still-unfixed defect and is pinned below by a named,
-passing test per D5 -- not fixed, not hidden behind a skip or an expected-failure marker.
+RPT-06 covers naive/aware ages. RPT-07's pagination count now follows actual positive
+balances, so fully paid orders with stale labels cannot inflate the count.
+
 """
 
 import itertools
@@ -150,7 +147,7 @@ def test_delivered_credit_order_with_balance_appears_in_list(db, monkeypatch):
     assert items[0]["order_id"] == order.id
 
 
-def test_pending_order_with_identical_balance_does_not_appear(db, monkeypatch):
+def test_pending_order_with_balance_appears(db, monkeypatch):
     _freeze(monkeypatch)
     seed = _seed(db)
     _order(
@@ -158,14 +155,13 @@ def test_pending_order_with_identical_balance_does_not_appear(db, monkeypatch):
         status=OrderStatus.PENDING, payment_status=PaymentStatus.CREDIT, created_at=_FROZEN_NOW,
     )
     items, total = get_outstanding_orders(db)
-    assert items == []
-    assert total == 0
+    assert len(items) == 1
+    assert items[0]["outstanding"] == Decimal("100.00")
+    assert total == 1
 
 
-def test_delivered_paid_order_with_balance_still_owing_does_not_appear(db, monkeypatch):
-    """Flagged PAID even though only partially paid: the entry filter keys off
-    `payment_status`, not the actual balance (`outstanding.py:26-27`) -- this order is
-    invisible to the whole report regardless of what it actually owes."""
+def test_stale_paid_label_does_not_hide_a_positive_balance(db, monkeypatch):
+    """Recorded payments and credits determine the balance, independently of old labels."""
     _freeze(monkeypatch)
     seed = _seed(db)
     _order(
@@ -173,8 +169,9 @@ def test_delivered_paid_order_with_balance_still_owing_does_not_appear(db, monke
         status=OrderStatus.DELIVERED, payment_status=PaymentStatus.PAID, paid=30, created_at=_FROZEN_NOW,
     )
     items, total = get_outstanding_orders(db)
-    assert items == []
-    assert total == 0
+    assert len(items) == 1
+    assert items[0]["outstanding"] == Decimal("70.00")
+    assert total == 1
 
 
 def test_outstanding_is_billed_minus_paid(db, monkeypatch):
@@ -218,26 +215,8 @@ def test_payments_exceeding_total_clamp_outstanding_to_zero_and_drop_order(db, m
     assert items == []
 
 
-def test_total_counts_orders_the_page_then_drops_them(db, monkeypatch):
-    """Pins `get_outstanding_orders`' `total = query.count()` call (`outstanding.py`, entry
-    filter query before the `outstanding <= 0` skip) as a KNOWN, DELIBERATELY UNFIXED
-    DEFECT -- `#todo RPT-07` -- per 05-CONTEXT.md D5. The Phase 5 coordinator ruling (R5)
-    fixes RPT-06 in this same plan but explicitly leaves RPT-07 pinned, not fixed.
-
-    `total` is computed against the entry-filtered query (DELIVERED status, payment_status
-    in CREDIT/PARTIAL) BEFORE the loop that skips rows whose computed `outstanding <= 0`. An
-    order flagged PARTIAL that has in fact been paid in full (its balance is zero) matches
-    the entry filter and is counted in `total`, but is dropped from `items`. A paginated
-    caller sees a `total` it can never reach by paging through `items`.
-
-    Reachable in production: `excel_import._reconcile_payment_status`
-    (`excel_import.py:541-547`) sets `PARTIAL` from the mere presence of a payment, not from
-    whether a balance remains -- an imported, fully-recovered bill can sit in exactly this
-    state.
-
-    When someone is authorised to fix RPT-07, this assertion must be INVERTED
-    (`total == len(items)`) -- do not delete this test, flip it.
-    """
+def test_total_matches_rows_with_positive_balances(db, monkeypatch):
+    """A settled order with a stale PARTIAL label cannot inflate pagination totals."""
     _freeze(monkeypatch)
     seed = _seed(db)
     _order(
@@ -249,8 +228,7 @@ def test_total_counts_orders_the_page_then_drops_them(db, monkeypatch):
         paid=100, payment_status=PaymentStatus.PARTIAL, created_at=_FROZEN_NOW,
     )
     items, total = get_outstanding_orders(db)
-    assert total == 2
-    assert len(items) == 1
+    assert total == len(items) == 1
 
 
 def test_retailer_id_narrows_to_expected_orders(db, monkeypatch):
@@ -518,7 +496,7 @@ def test_summary_zero_qualifying_orders_returns_zeroes_not_division_error(db, mo
         db,
         retailer_id=seed.retailer_a,
         sku_id=seed.sku_id,
-        status=OrderStatus.PENDING,
+        status=OrderStatus.CANCELLED,
         payment_status=PaymentStatus.CREDIT,
         created_at=_FROZEN_NOW,
     )
@@ -527,6 +505,11 @@ def test_summary_zero_qualifying_orders_returns_zeroes_not_division_error(db, mo
 
     assert summary == {
         "total_outstanding": Decimal("0.00"),
+        "breakdown": [
+            {"key": "dispatched", "label": "Delivered / out for delivery", "amount": 0, "orders": 0},
+            {"key": "pending", "label": "Pending orders", "amount": 0, "orders": 0},
+        ],
+        "reconciliation": {"order_value": 0, "collected": 0, "credits": 0, "excess_payments": 0},
         "total_recovered": Decimal("0.00"),
         "total_credit_notes": Decimal("0.00"),
         "recovery_rate": 0,

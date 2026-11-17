@@ -152,6 +152,9 @@ def _seed_dispatched_order(SessionLocal, quantity=5):
         order.delivery_driver_id = driver.id
         session.commit()
 
+        _reserve_inventory_for_order(session, order)
+        session.commit()
+        session.expire_all()
         _dispatch_reserved_inventory(session, order)
         order.status = OrderStatus.OUT_FOR_DELIVERY
         session.commit()
@@ -309,20 +312,8 @@ def test_two_concurrent_cancels_restore_inventory_once(SessionLocal):
 
 
 def test_cancel_racing_deliver_adjusts_inventory_once(SessionLocal):
-    """T-03-11 / T-03-12: cancel racing deliver, both from OUT_FOR_DELIVERY. The outcome is
-    genuinely non-deterministic and both orderings are valid — asserting a specific winner
-    would make this test flaky, which is worse than not having it at all:
-
-    - If CANCELLED commits first, DELIVERED's locked re-read sees CANCELLED, which has no
-      legal successor (D1), so it raises ValueError("Invalid status transition"). Final
-      status is CANCELLED; one restoration happened.
-    - If DELIVERED commits first, CANCELLED's locked re-read sees DELIVERED. Per D2,
-      DELIVERED -> CANCELLED is legal (admin only), so the cancel succeeds and restores
-      stock once.
-
-    Either ordering: final status is CANCELLED, inventory is adjusted exactly once, and at
-    most one worker raises. Do not tighten these assertions to pin an ordering — that would
-    make a correct, order-independent guarantee look flaky.
+    """Only the first transition can commit. If delivery wins, cancellation cannot
+    change the delivered order or restore its stock; if cancellation wins, stock returns once.
     """
     ids = _seed_dispatched_order(SessionLocal)
     try:
@@ -355,7 +346,7 @@ def test_cancel_racing_deliver_adjusts_inventory_once(SessionLocal):
 
         outcomes = [outcome_cancel, outcome_deliver]
         failures = [o for o in outcomes if o is not None]
-        assert len(failures) <= 1, f"at most one worker should fail, got outcomes: {outcomes}"
+        assert len(failures) == 1, f"exactly one transition must be rejected, got outcomes: {outcomes}"
         for failure in failures:
             assert isinstance(failure, ValueError)
             assert str(failure) == "Invalid status transition"
@@ -379,14 +370,11 @@ def test_cancel_racing_deliver_adjusts_inventory_once(SessionLocal):
                 .all()
             )
 
-            # Both orderings land here: DELIVERED->CANCELLED is legal for admin (D2), and
-            # CANCELLED beats DELIVERED outright when it commits first.
-            assert order.status is OrderStatus.CANCELLED
-            assert inventory.total_quantity == 50, (
-                f"expected exactly one net adjustment back to 50, got {inventory.total_quantity}"
-            )
-            assert batch.remaining_quantity == 50
-            assert len(returns) == 1, f"expected exactly one RETURN transaction, got {len(returns)}"
+            assert order.status in (OrderStatus.CANCELLED, OrderStatus.DELIVERED)
+            expected_stock = 50 if order.status == OrderStatus.CANCELLED else 45
+            assert inventory.total_quantity == expected_stock
+            assert batch.remaining_quantity == expected_stock
+            assert len(returns) == (1 if order.status == OrderStatus.CANCELLED else 0)
         finally:
             verify.close()
     finally:

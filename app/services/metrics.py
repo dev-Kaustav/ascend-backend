@@ -17,12 +17,13 @@ The rules, written once:
 """
 
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import SKU, Account, Employee, Inventory, Invoice, Order, OrderItem, Retailer
-from app.models.enums import OrderStatus, PaymentStatus
+from app.models import SKU, Account, CreditNote, Employee, Inventory, InventoryTransaction, Invoice, Order, OrderItem, Retailer, SKUBatch, Warehouse
+from app.models.enums import OrderStatus
 from app.services.finance import calculate_credit_note_totals, calculate_order_outstanding, calculate_order_totals
 
 IST = timedelta(hours=5, minutes=30)
@@ -33,9 +34,6 @@ LIVE_ORDER = and_(
     Order.to_entity_type == "RETAILER",
     Order.status != OrderStatus.CANCELLED,
 )
-
-# An order still owes money in any of these payment states.
-PAYMENT_DUE_STATUSES = (PaymentStatus.CREDIT, PaymentStatus.PARTIAL, PaymentStatus.UNPAID)
 
 # When a payment counts as collected: the day it was collected, else the day it was recorded.
 PAYMENT_DATE = func.coalesce(Account.collection_date, Account.created_at)
@@ -211,7 +209,18 @@ def money_series(db: Session, from_date: str | None = None, to_date: str | None 
 
 # ---- Money owed -------------------------------------------------------------------------------
 
-def outstanding_orders_query(
+def payment_due_query(query):
+    """A positive balance is authoritative, even if a legacy payment-status label is stale."""
+    orders = query.options(
+        joinedload(Order.payments),
+        joinedload(Order.credit_notes).joinedload(CreditNote.items),
+        joinedload(Order.items).joinedload(OrderItem.taxes),
+    ).all()
+    ids = [order.id for order in orders if calculate_order_outstanding(order) > 0]
+    return query.filter(Order.id.in_(ids))
+
+
+def _balance_orders_query(
     db: Session,
     warehouse_id: int | None = None,
     from_date: str | None = None,
@@ -219,12 +228,10 @@ def outstanding_orders_query(
     salesman_id: int | None = None,
     retailer_id: int | None = None,
 ):
-    """Delivered orders not fully paid. Only a delivered order can owe money."""
+    """Live orders and their recorded payments, scoped consistently for balances."""
     query = (
         live_orders(db)
-        .options(joinedload(Order.payments), joinedload(Order.credit_notes), joinedload(Order.items))
-        .filter(Order.status == OrderStatus.DELIVERED)
-        .filter(Order.payment_status.in_(PAYMENT_DUE_STATUSES))
+        .options(joinedload(Order.payments), joinedload(Order.credit_notes).joinedload(CreditNote.items), joinedload(Order.items).joinedload(OrderItem.taxes))
     )
     if warehouse_id:
         query = query.filter(Order.from_entity_id == warehouse_id)
@@ -234,6 +241,11 @@ def outstanding_orders_query(
     if retailer_id:
         query = query.filter(Order.to_entity_id == retailer_id)
     return query
+
+
+def outstanding_orders_query(db: Session, warehouse_id=None, from_date=None, to_date=None, salesman_id=None, retailer_id=None):
+    """Every live order with a positive balance, whatever its fulfilment status."""
+    return payment_due_query(_balance_orders_query(db, warehouse_id, from_date, to_date, salesman_id, retailer_id))
 
 
 def naive_utc(value: datetime) -> datetime:
@@ -256,8 +268,15 @@ def outstanding_summary(
 ):
     """Total outstanding, with its age and who owes it. Every screen that shows what shops owe
     reads this."""
-    orders = outstanding_orders_query(db, warehouse_id, from_date, to_date).all()
+    orders = _balance_orders_query(db, warehouse_id, from_date, to_date).all()
 
+    reconciliation = {"order_value": 0, "collected": 0, "credits": 0, "excess_payments": 0}
+    stages = {
+        "dispatched": {"key": "dispatched", "label": "Delivered / out for delivery", "amount": 0, "orders": 0},
+        "pending": {"key": "pending", "label": "Pending orders", "amount": 0, "orders": 0},
+        "preparing": {"key": "preparing", "label": "Accepted / awaiting rider", "amount": 0, "orders": 0},
+        "returned": {"key": "returned", "label": "Returned orders", "amount": 0, "orders": 0},
+    }
     total_outstanding = 0
     total_recovered = 0
     total_credit_notes = 0
@@ -267,12 +286,26 @@ def outstanding_summary(
     now = datetime.utcnow()
 
     for order in orders:
-        outstanding = calculate_order_outstanding(order)
-        if outstanding <= 0:
-            continue
         totals = calculate_order_totals(order)
         payments_total = sum(p.amount for p in order.payments)
         credit_total = credit_notes_total(order)
+        reconciliation["order_value"] += totals["grand_total"]
+        reconciliation["collected"] += payments_total
+        reconciliation["credits"] += credit_total
+        reconciliation["excess_payments"] += max(payments_total + credit_total - totals["grand_total"], 0)
+        outstanding = calculate_order_outstanding(order)
+        if outstanding <= 0:
+            continue
+        if order.status in (OrderStatus.DELIVERED, OrderStatus.OUT_FOR_DELIVERY):
+            stage = "dispatched"
+        elif order.status == OrderStatus.PENDING:
+            stage = "pending"
+        elif order.status == OrderStatus.RETURNED:
+            stage = "returned"
+        else:
+            stage = "preparing"
+        stages[stage]["amount"] += outstanding
+        stages[stage]["orders"] += 1
         total_outstanding += outstanding
         total_recovered += payments_total
         total_credit_notes += credit_total
@@ -323,6 +356,8 @@ def outstanding_summary(
 
     return {
         "total_outstanding": round(total_outstanding, 2),
+        "breakdown": [{**row, "amount": round(row["amount"], 2)} for key, row in stages.items() if key in ("dispatched", "pending") or row["amount"] > 0],
+        "reconciliation": {key: round(value, 2) for key, value in reconciliation.items()},
         "total_recovered": round(total_recovered, 2),
         "total_credit_notes": round(total_credit_notes, 2),
         "recovery_rate": recovery_rate,
@@ -356,6 +391,12 @@ def cancelled_money(db: Session) -> dict:
 
 # ---- Stock ------------------------------------------------------------------------------------
 
+def _stock_amount(unit_cost, units):
+    if unit_cost is None:
+        return None
+    return float((Decimal(str(unit_cost)) * Decimal(str(units or 0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def stock_value(db: Session, lowest: int = 5):
     """What the stock on hand cost us (units x distributor landing price), and the SKUs with the
     fewest units left across all warehouses."""
@@ -366,7 +407,7 @@ def stock_value(db: Session, lowest: int = 5):
         .all()
     )
     priced = [r for r in rows if r[3] is not None]
-    value = round(sum(float(r[3]) * float(r[4] or 0) for r in priced), 2) if priced else None
+    value = round(sum(_stock_amount(r[3], r[4]) for r in priced), 2) if priced else None
     lowest_rows = sorted(rows, key=lambda r: (float(r[4] or 0), r[1] or ""))[:lowest]
     return {
         "inventory_value": value,
@@ -375,4 +416,105 @@ def stock_value(db: Session, lowest: int = 5):
             {"sku_id": r[0], "name": r[1], "code": r[2], "units": float(r[4] or 0)}
             for r in lowest_rows
         ],
+    }
+
+
+def retailer_activity(db: Session, from_date=None, to_date=None, warehouse_id=None, beat_id=None, salesman_id=None):
+    """Per-shop order figures, including GST, for the Coverage screen."""
+    query = live_orders(db).options(joinedload(Order.items)).join(Retailer, Retailer.id == Order.to_entity_id)
+    query = in_period(query, Order.created_at, from_date, to_date)
+    if warehouse_id:
+        query = query.filter(Order.from_entity_id == warehouse_id)
+    if beat_id:
+        query = query.filter(Retailer.beat_id == beat_id)
+    if salesman_id:
+        query = query.filter(Retailer.assigned_salesman_id == salesman_id)
+    rows = {}
+    months = {}
+    for order in query.all():
+        row = rows.setdefault(order.to_entity_id, {"id": order.to_entity_id, "orders": 0, "total": 0, "last_billed": None})
+        row["orders"] += 1
+        row["total"] += calculate_order_totals(order)["grand_total"]
+        when = naive_utc(order.created_at) if order.created_at else None
+        if when and (row["last_billed"] is None or when > row["last_billed"]):
+            row["last_billed"] = when
+        if when:
+            month = ist_date(when).strftime("%Y-%m")
+            months.setdefault(month, set()).add(order.to_entity_id)
+    names = dict(db.query(Retailer.id, Retailer.name).filter(Retailer.id.in_(rows))) if rows else {}
+    for row in rows.values():
+        row["name"] = names.get(row["id"], "Unknown shop")
+        row["total"] = round(float(row["total"]), 2)
+    return {
+        "retailers": sorted(rows.values(), key=lambda row: -row["total"]),
+        "monthly": [{"label": month, "value": len(ids)} for month, ids in sorted(months.items())],
+    }
+
+
+def payment_days(db: Session, from_date=None, to_date=None):
+    by_day = {}
+    query = in_period(live_payments(db), PAYMENT_DATE, from_date, to_date)
+    for when, amount in query.with_entities(PAYMENT_DATE, Account.amount):
+        day = ist_date(when)
+        if day:
+            by_day[day] = by_day.get(day, 0) + float(amount or 0)
+    return [{"date": day.isoformat(), "amount": round(amount, 2)} for day, amount in sorted(by_day.items())]
+
+
+def stock_overview(db: Session, warehouse_id=None, from_date=None, to_date=None):
+    """Current allocator stock and batches; receipts and dispatches follow the period."""
+    # Local imports keep the existing inventory and ledger services' delegation acyclic.
+    from app.services.admin import get_inventory
+    from app.services.stock_ledger import _summary
+
+    today = today_ist()
+    inventory, _ = get_inventory(db, limit=db.query(Inventory).count(), warehouse_id=warehouse_id)
+    movements = db.query(InventoryTransaction)
+    batches = db.query(SKUBatch).filter(SKUBatch.remaining_quantity > 0)
+    if warehouse_id:
+        movements = movements.filter(InventoryTransaction.warehouse_id == warehouse_id)
+        batches = batches.filter(SKUBatch.warehouse_id == warehouse_id)
+    first, last = movements.with_entities(func.min(InventoryTransaction.created_at), func.max(InventoryTransaction.created_at)).one()
+    start = _iso_day(from_date) or (ist_date(first) if first else today)
+    end = _iso_day(to_date) or today
+    period_days = max(1, (end - start).days + 1)
+    flow = _summary(db, parse_date(from_date, False), parse_date(to_date, True), warehouse_id, None, None)
+    warehouse_names = dict(db.query(Warehouse.id, Warehouse.name))
+    rows = {sku.id: {
+        "sku_id": sku.id, "name": sku.name, "code": sku.code, "image_url": sku.image_url,
+        "on_hand": 0, "reserved": 0, "available": 0, "expired": 0,
+        "received": 0, "dispatched": 0, "returned": 0,
+        "unit_cost": float(sku.distributor_landing_price) if sku.distributor_landing_price is not None else None,
+        "earliest_expiry": None, "batches": [], "warehouses": [],
+    } for sku in db.query(SKU)}
+    for item in inventory:
+        row = rows[item["sku_id"]]
+        row["on_hand"] += item["total_quantity"]
+        row["reserved"] += item["reserved_quantity"]
+        row["available"] += item["available_quantity"]
+        row["expired"] += item["expired_quantity"]
+        row["warehouses"].append({**item, "name": warehouse_names.get(item["warehouse_id"])})
+    for item in flow.values():
+        for key in ("received", "dispatched", "returned"):
+            rows[item["sku_id"]][key] += item[key]
+    for batch in batches.order_by(SKUBatch.expiry_date.asc().nullslast(), SKUBatch.id):
+        row = rows[batch.sku_id]
+        row["batches"].append({"id": batch.id, "warehouse_name": warehouse_names.get(batch.warehouse_id),
+            "expiry_date": batch.expiry_date, "remaining": batch.remaining_quantity, "reserved": batch.reserved_quantity})
+        if batch.expiry_date and (row["earliest_expiry"] is None or batch.expiry_date < row["earliest_expiry"]):
+            row["earliest_expiry"] = batch.expiry_date
+    for row in rows.values():
+        row["value"] = _stock_amount(row["unit_cost"], row["on_hand"])
+        row["days_left"] = round(row["available"] / (row["dispatched"] / period_days), 1) if row["dispatched"] else None
+        row["running_low"] = row["available"] > 0 and row["days_left"] is not None and row["days_left"] < 14
+        row["out_of_stock"] = row["available"] <= 0
+        row["expiring"] = any(b["expiry_date"] and today <= b["expiry_date"] <= today + timedelta(days=60) for b in row["batches"])
+    values = list(rows.values())
+    return {
+        "first_movement_at": first, "last_movement_at": last, "period_days": period_days,
+        "totals": {**{key: sum(row[key] for row in values) for key in ("on_hand", "reserved", "available", "expired", "received", "dispatched", "returned")},
+            "value": round(sum(row["value"] or 0 for row in values), 2) if any(row["value"] is not None for row in values) else None,
+            "unpriced_skus": sum(row["unit_cost"] is None for row in values)},
+        "counts": {"all": len(values), **{key: sum(row[key] for row in values) for key in ("running_low", "out_of_stock", "expiring")}},
+        "skus": sorted(values, key=lambda row: (not row["out_of_stock"], row["days_left"] if row["days_left"] is not None else float("inf"), row["name"])),
     }

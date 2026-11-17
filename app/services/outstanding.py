@@ -1,4 +1,4 @@
-"""The receivables report: delivered orders not fully paid, one row each. Which orders count,
+"""The receivables report: non-cancelled orders not fully paid, one row each. Which orders count,
 and every total, come from app/services/metrics.py; the summary is metrics.outstanding_summary."""
 from datetime import datetime
 

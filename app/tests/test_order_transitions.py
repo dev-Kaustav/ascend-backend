@@ -11,7 +11,7 @@ compared against `_ALLOWED_TRANSITIONS` in exactly one test
 
 Two halves:
   - Task 1 (this file's top section): the (from, to) x role matrix, proved exhaustively via
-    the full 49-cell cross product and the full 10x7=70 pair-x-role cross product.
+    the full 49-cell cross product and the full 9x7=63 pair-x-role cross product.
   - Task 2 (this file's bottom section): behavioural, end-to-end proof that those rules are
     actually wired into `update_order_status` — the happy path, every cancel path, the D1
     reserved-status unreachability, and the D5 invoice-immutability fence.
@@ -71,7 +71,6 @@ _MATRIX = {
     (OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.DRIVER_ASSIGNED, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED): frozenset({"DRIVER", "ADMIN"}),
-    (OrderStatus.DELIVERED, OrderStatus.CANCELLED): frozenset({"ADMIN"}),
 }
 
 _ALL_STATUSES: list[OrderStatus] = list(OrderStatus)
@@ -105,12 +104,12 @@ def test_every_ordered_pair_is_classified(frm, to):
     assert is_allowed == expected_allowed
 
 
-def test_exactly_ten_pairs_are_allowed():
+def test_exactly_nine_pairs_are_allowed():
     """A future row addition to _MATRIX or _ALLOWED_TRANSITIONS must be a deliberate act,
     caught by this count changing."""
     allowed_count = sum(1 for frm, to in _ALL_PAIRS if to in allowed_next_statuses(frm))
-    assert allowed_count == 10
-    assert len(_MATRIX) == 10
+    assert allowed_count == 9
+    assert len(_MATRIX) == 9
 
 
 _PAIR_ROLE_CASES = [
@@ -203,6 +202,7 @@ _FORBIDDEN_SAMPLE = [
     (OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY),
     (OrderStatus.DRIVER_ASSIGNED, OrderStatus.DELIVERED),
     (OrderStatus.DELIVERED, OrderStatus.READY_TO_SHIP),
+    (OrderStatus.DELIVERED, OrderStatus.CANCELLED),
     (OrderStatus.CANCELLED, OrderStatus.PENDING),
 ]
 
@@ -355,7 +355,6 @@ _CANCEL_CASES = [
     (OrderStatus.READY_TO_SHIP, EmployeeRole.WAREHOUSE_MANAGER),
     (OrderStatus.DRIVER_ASSIGNED, EmployeeRole.RETAILER),
     (OrderStatus.OUT_FOR_DELIVERY, EmployeeRole.DRIVER),
-    (OrderStatus.DELIVERED, EmployeeRole.ADMIN),
 ]
 
 
@@ -689,3 +688,18 @@ def test_cancelling_an_assigned_order_releases_the_reservation(db):
     inventory = _stock(db, order)
     assert inventory.reserved_quantity == 0
     assert inventory.total_quantity == 50
+
+
+def test_delivered_order_cannot_be_cancelled_even_by_admin(client, db):
+    from app.core.security import create_access_token
+    order, driver, admin = _seed_dispatchable_order(db)
+    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
+    rider = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
+    _walk_order_to(db, order, driver, OrderStatus.DELIVERED, wm, rider)
+    trail_count = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).count()
+    headers = {"Authorization": f"Bearer {create_access_token({'user_id': admin.id, 'role': 'ADMIN'})}"}
+    response = client.patch(f"/orders/{order.id}/status", json={"status": "CANCELLED"}, headers=headers)
+    assert response.status_code == 400
+    db.refresh(order)
+    assert order.status == OrderStatus.DELIVERED
+    assert db.query(OrderTrail).filter(OrderTrail.order_id == order.id).count() == trail_count

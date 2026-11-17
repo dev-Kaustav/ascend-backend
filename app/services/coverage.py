@@ -5,24 +5,23 @@ denominator here is the set of retailers assigned to beats, never the whole reta
 """
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
 from app.models import Beat, Employee, Order, Retailer
 from app.models.enums import OrderStatus
+from app.services import metrics
 
 
 def _parse_bound(value: str | None, is_end: bool) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = date.fromisoformat(value)
+        date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"Invalid date '{value}' - expected YYYY-MM-DD") from exc
-    if is_end:
-        parsed += timedelta(days=1)
-    return datetime.combine(parsed, datetime.min.time())
+    return metrics.parse_date(value, is_end)
 
 
 def _ratio(billed: int, planned: int) -> float | None:
@@ -132,6 +131,7 @@ def get_coverage(
         "billed": billed_count,
         "coverage_percent": _ratio(billed_count, planned_count),
         "retailers_without_beat": db.query(Retailer).filter(Retailer.beat_id.is_(None)).count(),
+        "activity": metrics.retailer_activity(db, from_date, to_date, warehouse_id, beat_id, salesman_id),
         "by_beat": by_beat,
         "by_salesman": by_salesman,
     }

@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from collections import defaultdict
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
@@ -216,15 +216,7 @@ def list_payments(db: Session, limit: int = 50, offset: int = 0, from_date: str 
     for payment in items:
         setattr(payment, "retailer_name", shop_names.get(payment.order_id))
 
-    # Per India day; without a start date, the last 30 days.
-    daily_from = from_date or (metrics.today_ist() - timedelta(days=29)).isoformat()
-    by_day = defaultdict(float)
-    for when, amount in metrics.in_period(
-        metrics.live_payments(db), metrics.PAYMENT_DATE, daily_from, to_date
-    ).with_entities(metrics.PAYMENT_DATE, Account.amount):
-        by_day[metrics.ist_date(when)] += float(amount or 0)
-    daily_totals = [{"date": day.isoformat(), "amount": round(amount, 2)} for day, amount in sorted(by_day.items())]
-    return items, total, metrics.collected(db, from_date, to_date), daily_totals
+    return items, total, metrics.collected(db, from_date, to_date), metrics.payment_days(db, from_date, to_date)
 
 def list_credit_notes(db: Session, limit: int = 50, offset: int = 0, from_date: str | None = None, to_date: str | None = None):
     from_dt = _parse_date(from_date, False)

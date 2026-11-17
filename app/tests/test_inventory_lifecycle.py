@@ -16,7 +16,7 @@ Trigger table (04-CONTEXT.md `<baseline>`, confirmed by reading `update_order_st
 | PENDING -> CANCELLED                  | `_release_reserved_inventory`    |
 | READY_TO_SHIP -> CANCELLED            | `_release_reserved_inventory`    |
 | OUT_FOR_DELIVERY -> CANCELLED         | `_restore_dispatched_inventory`  |
-| DELIVERED -> CANCELLED                | `_restore_dispatched_inventory`  |
+| DELIVERED -> CANCELLED                | rejected; delivered is terminal  |
 
 **Correcting `CONCERNS.md:190`:** it claims `OrderItemBatch` "is only populated during
 PENDING->READY_TO_SHIP and OUT_FOR_DELIVERY transitions". That is wrong. The rows are
@@ -350,18 +350,19 @@ def test_restore_from_out_for_delivery_returns_the_goods_and_keeps_the_allocatio
     assert len(rows) == 1, "restore must keep its OrderItemBatch rows — they record a real shipment"
 
 
-def test_restore_from_delivered_behaves_identically(db):
+def test_delivered_cancellation_is_rejected_without_restoring_stock(db):
     ids = _seed(db, batch_quantity=10)
     order = _place_order(db, ids, quantity=4)
     _ready_to_ship(db, order, ids["driver"], ids["admin"])
     _dispatch(db, order, ids["admin"])
     _deliver(db, order, ids["admin"])
-    _cancel(db, order, ids["admin"])
+    with pytest.raises(ValueError, match="Invalid status transition"):
+        _cancel(db, order, ids["admin"])
 
     inventory = db.query(Inventory).filter(Inventory.sku_id == ids["sku_id"]).first()
     batch = db.query(SKUBatch).filter(SKUBatch.id == ids["batch_id"]).first()
-    assert inventory.total_quantity == 10
-    assert batch.remaining_quantity == 10
+    assert inventory.total_quantity == 6
+    assert batch.remaining_quantity == 6
     assert inventory.reserved_quantity == 0
     assert batch.reserved_quantity == 0
 
@@ -370,8 +371,8 @@ def test_restore_from_delivered_behaves_identically(db):
         .filter(InventoryTransaction.sku_id == ids["sku_id"], InventoryTransaction.transaction_type == TransactionType.RETURN)
         .all()
     )
-    assert len(return_txns) == 1
-    assert return_txns[0].quantity == 4
+    assert return_txns == []
+    assert order.status == OrderStatus.DELIVERED
 
     rows = _order_item_batches(db, order.id)
     assert len(rows) == 1

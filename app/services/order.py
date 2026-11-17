@@ -80,7 +80,6 @@ _ALLOWED_TRANSITIONS: dict[tuple[OrderStatus, OrderStatus], frozenset[str]] = {
     (OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.DRIVER_ASSIGNED, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED): frozenset({"DRIVER", "ADMIN"}),
-    (OrderStatus.DELIVERED, OrderStatus.CANCELLED): frozenset({"ADMIN"}),
 }
 
 
