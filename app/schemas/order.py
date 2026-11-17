@@ -53,6 +53,7 @@ class OrderItemResponse(BaseModel):
     id: int
     sku_id: int
     sku_name: Optional[str] = None
+    sku_code: Optional[str] = None
     hsn_code: Optional[str] = None
     # The SKU's pack, so an app can show "3 ladi" for 36 pieces.
     pack_type: Optional[str] = None
@@ -88,6 +89,14 @@ class CreditNoteResponse(BaseModel):
     created_at: Optional[datetime] = None
     items: list[CreditNoteItemResponse] = []
 
+class OrderTrailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    order_status: str
+    description: Optional[str] = None
+    changed_by_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
 class OrderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -99,6 +108,8 @@ class OrderResponse(BaseModel):
     invoice_number: Optional[str]
     channel: str = "OFFLINE"
     salesman_id: Optional[int]
+    beat_id: Optional[int] = None
+    beat_name: Optional[str] = None
     delivery_driver_id: Optional[int] = None
     delivery_date: Optional[datetime] = None
     panel_status: Optional[str] = None
@@ -129,6 +140,9 @@ class OrderResponse(BaseModel):
     delivery_charge: Optional[float] = None
     payments: list[PaymentResponse] = []
     credit_notes: list[CreditNoteResponse] = []
+    # Every status change with who made it and when. The serializer always built this list,
+    # but the response model left it out, so no screen could show an order's history.
+    trails: list[OrderTrailResponse] = []
     created_at: Optional[datetime] = None
     # 08-09 / D-29: where a storefront order was placed to, copied at order time. All None for
     # salesman orders, which deliver to the retailer's registered address.

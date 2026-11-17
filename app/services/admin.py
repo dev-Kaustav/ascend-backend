@@ -442,6 +442,11 @@ def _parse_date(value: str, is_end: bool) -> datetime | None:
         return datetime.combine(parsed + timedelta(days=1), datetime.min.time())
     return datetime.combine(parsed, datetime.min.time())
 
+# "Money still owed": a filter value of its own because an order can owe in three payment states.
+PAYMENT_DUE = "DUE"
+_PAYMENT_DUE_STATUSES = (PaymentStatus.CREDIT, PaymentStatus.PARTIAL, PaymentStatus.UNPAID)
+
+
 def _apply_order_filters(
     query,
     status: str | None = None,
@@ -459,7 +464,9 @@ def _apply_order_filters(
             query = query.filter(Order.status == OrderStatus(status))
         except ValueError:
             pass
-    if payment_status:
+    if payment_status == PAYMENT_DUE:
+        query = query.filter(Order.payment_status.in_(_PAYMENT_DUE_STATUSES))
+    elif payment_status:
         try:
             query = query.filter(Order.payment_status == PaymentStatus(payment_status))
         except ValueError:
@@ -989,6 +996,13 @@ def get_order_status_summary(db: Session, from_date: str | None = None, to_date:
     for status, count in rows:
         key = status.value if hasattr(status, "value") else status
         summary[key] = count
+    # Delivered but not fully paid: the collections queue on the orders screen.
+    summary["PAYMENT_DUE"] = (
+        q.filter(Order.status == OrderStatus.DELIVERED, Order.payment_status.in_(_PAYMENT_DUE_STATUSES))
+        .with_entities(func.count(Order.id))
+        .scalar()
+        or 0
+    )
     return summary
 
 def list_users(db: Session):
