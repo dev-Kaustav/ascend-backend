@@ -457,9 +457,12 @@ def _apply_order_filters(
     to_date: str | None = None,
     has_invoice: bool | None = None,
     channel: str | None = None,
+    salesman_id: int | None = None,
 ):
     if channel in ("ONLINE", "OFFLINE"):
         query = query.filter(Order.channel == channel)
+    if salesman_id:
+        query = query.filter(Order.salesman_id == salesman_id)
     if status:
         try:
             query = query.filter(Order.status == OrderStatus(status))
@@ -519,6 +522,22 @@ def _totals_subqueries(db: Session):
     )
     return base_sub, tax_sub
 
+def get_orders_value(db: Session, current_user, status: str | None = None, **filters) -> float:
+    """What the orders a list shows are worth, for one salesman or any other filter. Cancelled
+    orders are left out unless the list is of cancelled orders, so the figure is real business."""
+    query = _apply_order_filters(scoped_orders_query(db, current_user), status=status, **filters)
+    if status != OrderStatus.CANCELLED.value:
+        query = query.filter(Order.status != OrderStatus.CANCELLED)
+    base_sub, _tax_sub = _totals_subqueries(db)
+    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
+    value = (
+        query.outerjoin(base_sub, base_sub.c.order_id == Order.id)
+        .with_entities(func.coalesce(func.sum(total_expr), 0))
+        .scalar()
+    )
+    return round(float(value or 0), 2)
+
+
 def get_orders_page(
     db: Session,
     current_user,
@@ -531,6 +550,7 @@ def get_orders_page(
     to_date: str | None = None,
     has_invoice: bool | None = None,
     channel: str | None = None,
+    salesman_id: int | None = None,
 ):
     query = scoped_orders_query(db, current_user)
     query = _apply_order_filters(
@@ -542,6 +562,7 @@ def get_orders_page(
         to_date=to_date,
         has_invoice=has_invoice,
         channel=channel,
+        salesman_id=salesman_id,
     )
 
     total = query.count()
@@ -628,6 +649,7 @@ def get_order_export_rows(
     to_date: str | None = None,
     has_invoice: bool | None = None,
     channel: str | None = None,
+    salesman_id: int | None = None,
 ):
     order_salesman = aliased(Employee)
     retailer_salesman = aliased(Employee)
@@ -650,6 +672,7 @@ def get_order_export_rows(
         to_date=to_date,
         has_invoice=has_invoice,
         channel=channel,
+        salesman_id=salesman_id,
     )
     query = query.order_by(Order.created_at.desc(), Order.id.desc(), OrderItem.id.asc())
 
@@ -695,6 +718,7 @@ def export_orders_excel(
     to_date: str | None = None,
     has_invoice: bool | None = None,
     channel: str | None = None,
+    salesman_id: int | None = None,
 ) -> BytesIO:
     rows = get_order_export_rows(
         db,
@@ -705,6 +729,7 @@ def export_orders_excel(
         to_date=to_date,
         has_invoice=has_invoice,
         channel=channel,
+        salesman_id=salesman_id,
     )
 
     headers = [
@@ -1071,7 +1096,9 @@ def list_skus(db: Session):
 def list_warehouses(db: Session):
     return db.query(Warehouse).order_by(Warehouse.name.asc()).all()
 
-def get_order_status_summary(db: Session, from_date: str | None = None, to_date: str | None = None):
+def get_order_status_summary(
+    db: Session, from_date: str | None = None, to_date: str | None = None, salesman_id: int | None = None
+):
     from_dt = _parse_date(from_date, False)
     to_dt = _parse_date(to_date, True)
     q = (
@@ -1082,6 +1109,8 @@ def get_order_status_summary(db: Session, from_date: str | None = None, to_date:
         q = q.filter(Order.created_at >= from_dt)
     if to_dt:
         q = q.filter(Order.created_at < to_dt)
+    if salesman_id:
+        q = q.filter(Order.salesman_id == salesman_id)
     rows = q.group_by(Order.status).all()
     summary = {}
     for status, count in rows:

@@ -180,6 +180,8 @@ class OrderListResponse(BaseModel):
 class OrderListPage(BaseModel):
     items: list[OrderListResponse]
     total: int
+    # What the listed orders (all pages) are worth, cancelled ones excluded unless listed.
+    total_value: Optional[float] = None
 
 class StatusUpdate(BaseModel):
     status: str

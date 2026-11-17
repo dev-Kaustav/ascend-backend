@@ -32,6 +32,7 @@ from app.services.admin import (
     list_warehouses,
     get_admin_summary,
     get_order_status_summary,
+    get_orders_value,
     list_users,
     set_user_active,
     set_user_role,
@@ -289,6 +290,7 @@ def get_orders_endpoint(
     to_date: str | None = Query(None),
     has_invoice: bool | None = Query(None),
     channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
+    salesman_id: int | None = Query(None),
 ):
     items, total = get_orders_page(
         db,
@@ -302,8 +304,21 @@ def get_orders_endpoint(
         to_date=to_date,
         has_invoice=has_invoice,
         channel=channel,
+        salesman_id=salesman_id,
     )
-    return {"items": items, "total": total}
+    total_value = get_orders_value(
+        db,
+        current_user,
+        status=status,
+        payment_status=payment_status,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        has_invoice=has_invoice,
+        channel=channel,
+        salesman_id=salesman_id,
+    )
+    return {"items": items, "total": total, "total_value": total_value}
 
 @router.get("/orders/export")
 def export_orders_endpoint(
@@ -316,6 +331,7 @@ def export_orders_endpoint(
     to_date: str | None = Query(None),
     has_invoice: bool | None = Query(None),
     channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
+    salesman_id: int | None = Query(None),
 ):
     output = export_orders_excel(
         db,
@@ -326,6 +342,7 @@ def export_orders_endpoint(
         to_date=to_date,
         has_invoice=has_invoice,
         channel=channel,
+        salesman_id=salesman_id,
     )
     filename = f"orders_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
@@ -407,8 +424,9 @@ def get_order_status_summary_endpoint(
     current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER")),
     from_date: str | None = Query(None),
     to_date: str | None = Query(None),
+    salesman_id: int | None = Query(None),
 ):
-    return get_order_status_summary(db, from_date=from_date, to_date=to_date)
+    return get_order_status_summary(db, from_date=from_date, to_date=to_date, salesman_id=salesman_id)
 
 @router.get("/retailers", response_model=list[RetailerResponse])
 def list_retailers_endpoint(db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER"))):
