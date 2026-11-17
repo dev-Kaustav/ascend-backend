@@ -567,7 +567,8 @@ def test_ops_order_list_detail_and_summary_include_the_charge(client, db, monkey
 
     summary = client.get("/admin/summary", headers=auth_headers(admin)).json()
     assert summary["orders"]["revenue"] == 486.0
-    assert summary["orders"]["outstanding"] == 486.0
+    # Nothing is owed until the order is delivered (metrics.outstanding_summary).
+    assert summary["orders"]["outstanding"] == 0
 
 
 def test_an_order_without_a_charge_reports_zero_delivery_in_the_ops_detail(client, db):

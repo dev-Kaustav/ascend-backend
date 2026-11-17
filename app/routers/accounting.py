@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.accounting import create_payment, create_multi_payment, create_credit_note, get_credit_note_view, list_payments, list_credit_notes, get_collections, get_collection_summary
 from app.services.outstanding import get_outstanding_orders, get_outstanding_summary
+from app.services.metrics import cancelled_money
 from app.schemas.accounting import (
     PaymentCreate,
     MultiPaymentCreate,
@@ -95,6 +96,11 @@ def outstanding_summary_endpoint(
     to_date: str | None = Query(None),
 ):
     return get_outstanding_summary(db, warehouse_id=warehouse_id, from_date=from_date, to_date=to_date)
+
+@router.get("/cancelled-money")
+def cancelled_money_endpoint(db: Session = Depends(get_db), current_user=Depends(require_accountant)):
+    """Payments and invoices recorded on cancelled orders, which count in no total."""
+    return cancelled_money(db)
 
 @router.get("/collections")
 def collections_endpoint(

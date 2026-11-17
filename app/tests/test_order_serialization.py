@@ -378,7 +378,7 @@ def test_serialized_shape_is_stable(db):
         "description", "payment_status", "items", "warehouse_name", "warehouse_state",
         "retailer_name", "retailer_address_line1", "retailer_city", "retailer_state",
         "retailer_pincode", "retailer_gst_number", "salesman_name", "salesman_phone",
-        "delivery_driver_name", "total_amount", "pending_amount", "taxable_value",
+        "delivery_driver_name", "total_amount", "pending_amount", "amount_paid", "taxable_value",
         "gst_amount", "subtotal", "grand_total", "payments", "credit_notes", "trails",
         "created_at",
         # 08-09: ship-to snapshot, all None for an order that carries none.

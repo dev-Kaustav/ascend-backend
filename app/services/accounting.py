@@ -13,19 +13,10 @@ from app.services.finance import (
     _round_money,
 )
 from app.services.transactions import transactional_session
+from app.services import metrics
 
 
-def _parse_date(value: str | None, is_end: bool) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError:
-        return None
-    if is_end:
-        from datetime import timedelta
-        return datetime.combine(parsed + timedelta(days=1), datetime.min.time())
-    return datetime.combine(parsed, datetime.min.time())
+_parse_date = metrics.parse_date
 
 def create_payment(db: Session, order_id: int, payment: PaymentCreate):
     order = db.query(Order).filter(Order.id == order_id).first()
@@ -206,14 +197,9 @@ def get_credit_note_view(db: Session, credit_note_id: int):
     return {"credit_note": credit_note, **totals}
 
 def list_payments(db: Session, limit: int = 50, offset: int = 0, from_date: str | None = None, to_date: str | None = None):
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-
-    query = db.query(Account)
-    if from_dt:
-        query = query.filter(Account.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Account.created_at < to_dt)
+    """The payment log: payments on live orders (metrics.live_payments), by collection date. Its
+    total is metrics.collected for the same period."""
+    query = metrics.in_period(metrics.live_payments(db), metrics.PAYMENT_DATE, from_date, to_date)
 
     total = query.count()
     items = (
@@ -223,32 +209,15 @@ def list_payments(db: Session, limit: int = 50, offset: int = 0, from_date: str 
         .all()
     )
 
-    amount_q = db.query(func.coalesce(func.sum(Account.amount), 0))
-    if from_dt:
-        amount_q = amount_q.filter(Account.created_at >= from_dt)
-    if to_dt:
-        amount_q = amount_q.filter(Account.created_at < to_dt)
-    total_amount = amount_q.scalar() or 0
-
-    daily_since = from_dt if from_dt else (datetime.utcnow() - timedelta(days=30))
-    daily_q = (
-        db.query(func.date(Account.created_at), func.sum(Account.amount))
-        .filter(Account.created_at >= daily_since)
-    )
-    if to_dt:
-        daily_q = daily_q.filter(Account.created_at < to_dt)
-    daily_rows = (
-        daily_q
-        .group_by(func.date(Account.created_at))
-        .order_by(func.date(Account.created_at))
-        .all()
-    )
-    daily_totals = [
-        {"date": day.isoformat(), "amount": round(float(amount or 0), 2)}
-        for day, amount in daily_rows
-        if day
-    ]
-    return items, total, round(float(total_amount or 0), 2), daily_totals
+    # Per India day; without a start date, the last 30 days.
+    daily_from = from_date or (metrics.today_ist() - timedelta(days=29)).isoformat()
+    by_day = defaultdict(float)
+    for when, amount in metrics.in_period(
+        metrics.live_payments(db), metrics.PAYMENT_DATE, daily_from, to_date
+    ).with_entities(metrics.PAYMENT_DATE, Account.amount):
+        by_day[metrics.ist_date(when)] += float(amount or 0)
+    daily_totals = [{"date": day.isoformat(), "amount": round(amount, 2)} for day, amount in sorted(by_day.items())]
+    return items, total, metrics.collected(db, from_date, to_date), daily_totals
 
 def list_credit_notes(db: Session, limit: int = 50, offset: int = 0, from_date: str | None = None, to_date: str | None = None):
     from_dt = _parse_date(from_date, False)
@@ -306,15 +275,9 @@ def get_collections(
     limit: int = 50,
     offset: int = 0,
 ):
-    query = db.query(Account).join(Order, Order.id == Account.order_id)
+    query = metrics.in_period(metrics.live_payments(db), metrics.PAYMENT_DATE, from_date, to_date)
     if warehouse_id:
         query = query.filter(Order.from_entity_id == warehouse_id)
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    if from_dt:
-        query = query.filter(Account.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Account.created_at < to_dt)
     if collected_by_id:
         query = query.filter(Account.collected_by_id == collected_by_id)
 
@@ -352,18 +315,11 @@ def get_collection_summary(
         try:
             d = date.fromisoformat(target_date)
         except ValueError:
-            d = date.today()
+            d = metrics.today_ist()
     else:
-        d = date.today()
+        d = metrics.today_ist()
 
-    day_start = datetime.combine(d, datetime.min.time())
-    day_end = datetime.combine(d + timedelta(days=1), datetime.min.time())
-
-    query = (
-        db.query(Account)
-        .join(Order, Order.id == Account.order_id)
-        .filter(Account.created_at >= day_start, Account.created_at < day_end)
-    )
+    query = metrics.in_period(metrics.live_payments(db), metrics.PAYMENT_DATE, d.isoformat(), d.isoformat())
     if warehouse_id:
         query = query.filter(Order.from_entity_id == warehouse_id)
 

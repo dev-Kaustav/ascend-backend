@@ -26,7 +26,8 @@ from app.models import (
     Warehouse,
 )
 from app.models.enums import TransactionType
-from app.services.admin import _naive_datetime, _parse_date
+from app.services.admin import _naive_datetime
+from app.services.metrics import parse_date as _parse_date
 
 TYPE_LABELS = {"IN": "Receipt", "OUT": "Dispatch", "RETURN": "Return"}
 

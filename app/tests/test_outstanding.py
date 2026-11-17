@@ -48,7 +48,9 @@ class _FrozenDateTime(datetime):
 
 
 def _freeze(monkeypatch):
+    # The summary's aging is worked out in app/services/metrics.py, the list's in outstanding.py.
     monkeypatch.setattr("app.services.outstanding.datetime", _FrozenDateTime)
+    monkeypatch.setattr("app.services.metrics.datetime", _FrozenDateTime)
 
 
 _txn_seq = itertools.count()
@@ -282,13 +284,13 @@ def test_warehouse_id_narrows_to_expected_orders(db, monkeypatch):
 
 
 def test_date_range_is_half_open(db, monkeypatch):
-    """`to_date` filters `created_at < midnight of the following day` (`_parse_date`,
-    `is_end=True`): an order at 23:59:59 on `to_date` is in, one at 00:00:00 the next day is
-    out."""
+    """`to_date` filters `created_at < India midnight of the following day` (metrics.parse_date,
+    `is_end=True`): an order at 23:59:59 India time on `to_date` is in, one at 00:00:00 the next
+    day is out. Stored times are UTC, India is UTC+5:30."""
     _freeze(monkeypatch)
     seed = _seed(db)
-    in_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, created_at=datetime(2026, 6, 15, 23, 59, 59))
-    out_of_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, created_at=datetime(2026, 6, 16, 0, 0, 0))
+    in_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, created_at=datetime(2026, 6, 15, 18, 29, 59))
+    out_of_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, created_at=datetime(2026, 6, 15, 18, 30, 0))
     items, total = get_outstanding_orders(db, from_date="2026-06-10", to_date="2026-06-15")
     ids = {i["order_id"] for i in items}
     assert in_range.id in ids
@@ -496,8 +498,9 @@ def test_summary_warehouse_and_date_filters_narrow_the_report(db, monkeypatch):
     _freeze(monkeypatch)
     seed = _seed(db)
     in_range = _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=100, created_at=datetime(2026, 6, 10, 12, 0, 0))
-    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=50, created_at=datetime(2026, 6, 9, 23, 59, 59))
-    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=60, created_at=datetime(2026, 6, 16, 0, 0, 0))
+    # 23:59:59 India time on 9 Jun and 00:00 India time on 16 Jun (stored as UTC): both outside.
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=50, created_at=datetime(2026, 6, 9, 18, 29, 59))
+    _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=1, unit_price=60, created_at=datetime(2026, 6, 15, 18, 30, 0))
     _order(db, retailer_id=seed.retailer_a, sku_id=seed.sku_id, warehouse_id=2, unit_price=70, created_at=datetime(2026, 6, 10, 12, 0, 0))
 
     summary = get_outstanding_summary(db, warehouse_id=1, from_date="2026-06-10", to_date="2026-06-15")

@@ -1,23 +1,24 @@
-from datetime import datetime, date, timedelta
+"""Sales per day and per salesman. Cancelled orders count in no total (orders, amount,
+collected); how many were cancelled, and why, is reported on its own (app/services/metrics.py)."""
 from collections import defaultdict
-from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import Order, Employee
 from app.models.enums import OrderStatus
+from app.services import metrics
 from app.services.finance import calculate_order_totals
 
 
-def _parse_date(value: str | None, is_end: bool) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError:
-        return None
-    if is_end:
-        return datetime.combine(parsed + timedelta(days=1), datetime.min.time())
-    return datetime.combine(parsed, datetime.min.time())
+def _orders(db: Session, warehouse_id, from_date, to_date):
+    """Outgoing orders in the period, cancelled ones included so they can be counted apart."""
+    query = db.query(Order).filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
+    if warehouse_id:
+        query = query.filter(Order.from_entity_id == warehouse_id)
+    return metrics.in_period(query, Order.created_at, from_date, to_date)
+
+
+def _cancel_rate(cancelled: int, live: int) -> float:
+    return round(cancelled / (live + cancelled) * 100, 1) if (live + cancelled) > 0 else 0
 
 
 def get_daily_sales_summary(
@@ -26,20 +27,7 @@ def get_daily_sales_summary(
     from_date: str | None = None,
     to_date: str | None = None,
 ):
-    query = (
-        db.query(Order)
-        .options(joinedload(Order.items), joinedload(Order.payments))
-        .filter(Order.from_entity_type == "WAREHOUSE")
-    )
-    if warehouse_id:
-        query = query.filter(Order.from_entity_id == warehouse_id)
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    if from_dt:
-        query = query.filter(Order.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Order.created_at < to_dt)
-
+    query = _orders(db, warehouse_id, from_date, to_date).options(joinedload(Order.items), joinedload(Order.payments))
     orders = query.order_by(Order.created_at.desc()).all()
 
     daily = defaultdict(lambda: {
@@ -71,30 +59,10 @@ def get_daily_sales_summary(
     for order in orders:
         if not order.created_at:
             continue
-        day_key = order.created_at.date().isoformat()
+        day_key = metrics.ist_date(order.created_at).isoformat()
         day = daily[day_key]
         day["date"] = day_key
-
-        totals = calculate_order_totals(order)
-        amount = totals["grand_total"]
-        collected = sum(p.amount for p in order.payments)
-
-        day["total_orders"] += 1
-        day["total_amount"] += amount
-        day["collected"] += collected
-        total_orders += 1
-        total_amount += amount
-        total_collected += collected
-
-        if order.status == OrderStatus.DELIVERED:
-            day["delivered"] += 1
-            total_delivered += 1
-        elif order.status == OrderStatus.CANCELLED:
-            day["cancelled"] += 1
-            total_cancelled += 1
-            if order.issue_category:
-                cat = order.issue_category.value if hasattr(order.issue_category, "value") else order.issue_category
-                issue_counts[cat] += 1
+        cancelled = order.status == OrderStatus.CANCELLED
 
         sid = order.salesman_id or 0
         if sid not in salesman_cache:
@@ -103,12 +71,32 @@ def get_daily_sales_summary(
         sm = day["by_salesman"][sid]
         sm["salesman_id"] = sid
         sm["salesman_name"] = salesman_cache[sid]
+
+        if cancelled:
+            day["cancelled"] += 1
+            sm["cancelled"] += 1
+            total_cancelled += 1
+            if order.issue_category:
+                cat = order.issue_category.value if hasattr(order.issue_category, "value") else order.issue_category
+                issue_counts[cat] += 1
+            continue
+
+        amount = calculate_order_totals(order)["grand_total"]
+        collected = sum(p.amount for p in order.payments)
+
+        day["total_orders"] += 1
+        day["total_amount"] += amount
+        day["collected"] += collected
+        total_orders += 1
+        total_amount += amount
+        total_collected += collected
         sm["orders"] += 1
         sm["amount"] += amount
+
         if order.status == OrderStatus.DELIVERED:
+            day["delivered"] += 1
+            total_delivered += 1
             sm["delivered"] += 1
-        elif order.status == OrderStatus.CANCELLED:
-            sm["cancelled"] += 1
 
     days_list = []
     for day_key in sorted(daily.keys(), reverse=True):
@@ -118,7 +106,7 @@ def get_daily_sales_summary(
         d["collected"] = round(d["collected"], 2)
         days_list.append(d)
 
-    cancel_rate = round(total_cancelled / total_orders * 100, 1) if total_orders > 0 else 0
+    cancel_rate = _cancel_rate(total_cancelled, total_orders)
 
     return {
         "total_orders": total_orders,
@@ -138,21 +126,7 @@ def get_salesman_performance(
     from_date: str | None = None,
     to_date: str | None = None,
 ):
-    query = (
-        db.query(Order)
-        .options(joinedload(Order.items))
-        .filter(Order.from_entity_type == "WAREHOUSE")
-    )
-    if warehouse_id:
-        query = query.filter(Order.from_entity_id == warehouse_id)
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    if from_dt:
-        query = query.filter(Order.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Order.created_at < to_dt)
-
-    orders = query.all()
+    orders = _orders(db, warehouse_id, from_date, to_date).options(joinedload(Order.items)).all()
     by_salesman = defaultdict(lambda: {
         "salesman_id": None,
         "salesman_name": None,
@@ -175,7 +149,8 @@ def get_salesman_performance(
         sm = by_salesman[sid]
         sm["salesman_id"] = sid
         sm["salesman_name"] = salesman_cache[sid]
-        sm["total_orders"] += 1
+        if order.status != OrderStatus.CANCELLED:
+            sm["total_orders"] += 1
         if order.status == OrderStatus.DELIVERED:
             sm["delivered"] += 1
             sm["delivered_amount"] += amount
@@ -185,7 +160,7 @@ def get_salesman_performance(
 
     result = []
     for sm in by_salesman.values():
-        sm["cancel_rate"] = round(sm["cancelled"] / sm["total_orders"] * 100, 1) if sm["total_orders"] > 0 else 0
+        sm["cancel_rate"] = _cancel_rate(sm["cancelled"], sm["total_orders"])
         sm["delivered_amount"] = round(sm["delivered_amount"], 2)
         sm["cancelled_amount"] = round(sm["cancelled_amount"], 2)
         result.append(sm)

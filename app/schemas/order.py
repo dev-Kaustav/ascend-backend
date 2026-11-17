@@ -130,6 +130,7 @@ class OrderResponse(BaseModel):
     delivery_driver_name: Optional[str] = None
     total_amount: Optional[float] = None
     pending_amount: Optional[float] = None
+    amount_paid: Optional[float] = None
     can_collect_cash: bool = False
     taxable_value: Optional[float] = None
     gst_amount: Optional[float] = None

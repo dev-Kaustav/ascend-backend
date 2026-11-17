@@ -1,11 +1,11 @@
-"""The dashboard's money and stock figures: weekly sales, collections and orders in India time,
-month to date against the same days of last month, and stock valued at landing price."""
+"""The dashboard's money and stock figures (app/services/metrics.py): sales, collections and
+orders for a period in India time, bucketed by week or month, and stock valued at landing price."""
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.models import SKU, Account, Brand, Inventory, Invoice, Order, Warehouse
 from app.models.enums import InvoiceStatus, InvoiceType, OrderStatus, SupplyType
-from app.services.admin import get_dashboard_money, get_stock_value
+from app.services.metrics import money_series, stock_value as get_stock_value
 
 TODAY = date(2026, 11, 17)  # a Tuesday; this week starts Monday 16 Nov
 
@@ -40,7 +40,7 @@ def _payment(db, order, when, amount, ref):
     db.add(Account(order_id=order.id, amount=Decimal(amount), transaction_reference=ref, collection_date=when))
 
 
-def test_weeks_months_and_india_time(db):
+def _seed_money(db):
     a = _order(db, _utc(2026, 11, 16))
     _invoice(db, a, _utc(2026, 11, 16), "1000.00")
     _payment(db, a, _utc(2026, 11, 17), "400.00", "p1")
@@ -56,20 +56,49 @@ def test_weeks_months_and_india_time(db):
     _payment(db, d, _utc(2026, 10, 6), "300.00", "p2")
     e = _order(db, _utc(2026, 10, 25))
     _invoice(db, e, _utc(2026, 10, 25), "999.00")
-    # A cancelled order is not an order placed.
-    _order(db, _utc(2026, 11, 16), status=OrderStatus.CANCELLED)
+    # A cancelled order counts for nothing, even with an invoice and a payment against it.
+    x = _order(db, _utc(2026, 11, 16), status=OrderStatus.CANCELLED)
+    _invoice(db, x, _utc(2026, 11, 16), "7777.00")
+    _payment(db, x, _utc(2026, 11, 16), "70.00", "px")
     db.commit()
 
-    money = get_dashboard_money(db, today=TODAY)
 
-    weeks = money["weeks"]
-    assert len(weeks) == 12
-    assert weeks[-1] == {"week_start": "2026-11-16", "sales": 1500.0, "collected": 400.0, "orders": 2.0}
-    assert weeks[-2] == {"week_start": "2026-11-09", "sales": 250.0, "collected": 0.0, "orders": 1.0}
-    assert money["month_to_date"] == {"sales": 1750.0, "collected": 400.0, "orders": 3.0}
-    assert money["previous_month_to_date"] == {"sales": 300.0, "collected": 300.0, "orders": 1.0}
-    # Every week is a Monday, in order, ending with this week.
-    assert [w["week_start"] for w in weeks][0] == "2026-08-31"
+def test_a_period_is_bucketed_by_week_in_india_time(db):
+    _seed_money(db)
+
+    money = money_series(db, "2026-11-01", "2026-11-17", today=TODAY)
+
+    assert money["bucket"] == "week"
+    assert money["totals"] == {"sales": 1750.0, "collected": 400.0, "orders": 3.0}
+    # Sunday 1 Nov sits in the week of Monday 26 Oct; only the 1st counts towards it.
+    assert [w["start"] for w in money["buckets"]] == ["2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16"]
+    assert money["buckets"][0] == {"start": "2026-10-26", "sales": 0.0, "collected": 0.0, "orders": 0.0}
+    assert money["buckets"][-1] == {"start": "2026-11-16", "sales": 1500.0, "collected": 400.0, "orders": 2.0}
+    # The 17 days before: 15 Oct to 31 Oct.
+    assert money["previous"] == {"sales": 999.0, "collected": 0.0, "orders": 1.0}
+
+
+def test_all_time_starts_at_the_first_record_and_has_no_comparison(db):
+    _seed_money(db)
+
+    money = money_series(db, today=TODAY)
+
+    assert money["from"] == "2026-10-05"
+    assert money["to"] == "2026-11-17"
+    assert money["totals"] == {"sales": 3049.0, "collected": 700.0, "orders": 5.0}
+    assert sum(w["sales"] for w in money["buckets"]) == 3049.0
+    assert money["previous"] is None
+
+
+def test_a_long_period_is_bucketed_by_month(db):
+    _seed_money(db)
+
+    money = money_series(db, "2026-01-01", "2026-11-17", today=TODAY)
+
+    assert money["bucket"] == "month"
+    assert money["buckets"][0]["start"] == "2026-01-01"
+    assert money["buckets"][-1] == {"start": "2026-11-01", "sales": 1750.0, "collected": 400.0, "orders": 3.0}
+    assert money["buckets"][-2] == {"start": "2026-10-01", "sales": 1299.0, "collected": 300.0, "orders": 2.0}
 
 
 def test_stock_is_valued_at_landing_price_and_lowest_listed_first(db):

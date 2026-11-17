@@ -83,11 +83,14 @@ def test_one_salesmans_queues_list_and_value(db):
     sold(nitin, OrderStatus.PENDING, PaymentStatus.CREDIT, 40)
 
     summary = get_order_status_summary(db, salesman_id=sumit.id)
-    assert summary == {"PENDING": 1, "DELIVERED": 1, "CANCELLED": 1, "PAYMENT_DUE": 1}
+    assert summary == {"PENDING": 1, "DELIVERED": 1, "CANCELLED": 1, "ALL": 2, "PAYMENT_DUE": 1}
 
+    # The list leaves the cancelled order out unless cancelled orders are asked for.
     items, total = get_orders_page(db, ADMIN, salesman_id=sumit.id)
-    assert total == 3
+    assert total == 2 == summary["ALL"]
     assert {item.salesman_id for item in items} == {sumit.id}
+    _, cancelled_total = get_orders_page(db, ADMIN, status="CANCELLED", salesman_id=sumit.id)
+    assert cancelled_total == 1
 
     # Real business only: the cancelled order is not counted unless cancelled orders are listed.
     assert get_orders_value(db, ADMIN, salesman_id=sumit.id) == 350.0

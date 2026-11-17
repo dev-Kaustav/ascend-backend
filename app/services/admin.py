@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime
 from io import BytesIO
 import re
 from sqlalchemy import and_, func, or_
@@ -20,7 +20,6 @@ from app.models import (
     InventoryTransaction,
     Order,
     OrderItem,
-    OrderItemTax,
     CreditNote,
     Invoice,
     User,
@@ -28,7 +27,6 @@ from app.models import (
     CompanyProfile,
     PaymentQRImage,
     Category,
-    Account,
 )
 from app.models.payment_qr_image import digest_image
 from app.schemas.admin import (
@@ -50,6 +48,7 @@ from app.models.enums import TransactionType, OrderStatus, EmployeeRole, Payment
 from app.services.transactions import transactional_session
 from app.core.security import get_password_hash
 from app.services.finance import calculate_order_outstanding
+from app.services import metrics
 from app.services import inventory as inventory_service
 from app.services.order import scoped_orders_query
 
@@ -432,20 +431,11 @@ def get_inventory(db: Session, limit: int = 50, offset: int = 0, warehouse_id: i
     ]
     return items, total
 
-def _parse_date(value: str, is_end: bool) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError:
-        return None
-    if is_end:
-        return datetime.combine(parsed + timedelta(days=1), datetime.min.time())
-    return datetime.combine(parsed, datetime.min.time())
+_parse_date = metrics.parse_date
 
 # "Money still owed": a filter value of its own because an order can owe in three payment states.
 PAYMENT_DUE = "DUE"
-_PAYMENT_DUE_STATUSES = (PaymentStatus.CREDIT, PaymentStatus.PARTIAL, PaymentStatus.UNPAID)
+_PAYMENT_DUE_STATUSES = metrics.PAYMENT_DUE_STATUSES
 
 
 def _apply_order_filters(
@@ -463,11 +453,17 @@ def _apply_order_filters(
         query = query.filter(Order.channel == channel)
     if salesman_id:
         query = query.filter(Order.salesman_id == salesman_id)
+    status_filter = None
     if status:
         try:
-            query = query.filter(Order.status == OrderStatus(status))
+            status_filter = OrderStatus(status)
         except ValueError:
             pass
+    if status_filter is not None:
+        query = query.filter(Order.status == status_filter)
+    else:
+        # Cancelled orders count for nothing: a list shows them only when asked for by status.
+        query = query.filter(Order.status != OrderStatus.CANCELLED)
     if payment_status == PAYMENT_DUE:
         query = query.filter(Order.payment_status.in_(_PAYMENT_DUE_STATUSES))
     elif payment_status:
@@ -493,49 +489,13 @@ def _apply_order_filters(
     if has_invoice is False:
         query = query.filter(~Order.invoice.has())
 
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    if from_dt:
-        query = query.filter(Order.created_at >= from_dt)
-    if to_dt:
-        query = query.filter(Order.created_at < to_dt)
-    return query
-
-def _totals_subqueries(db: Session):
-    base_expr = (OrderItem.quantity * OrderItem.unit_price) - OrderItem.discount_amount
-    base_sub = (
-        db.query(
-            OrderItem.order_id.label("order_id"),
-            func.sum(base_expr).label("base_total"),
-        )
-        .group_by(OrderItem.order_id)
-        .subquery()
-    )
-    tax_sub = (
-        db.query(
-            OrderItem.order_id.label("order_id"),
-            func.sum(base_expr * (OrderItemTax.rate / 100.0)).label("tax_total"),
-        )
-        .join(OrderItemTax, OrderItemTax.order_item_id == OrderItem.id)
-        .group_by(OrderItem.order_id)
-        .subquery()
-    )
-    return base_sub, tax_sub
+    return metrics.in_period(query, Order.created_at, from_date, to_date)
 
 def get_orders_value(db: Session, current_user, status: str | None = None, **filters) -> float:
-    """What the orders a list shows are worth, for one salesman or any other filter. Cancelled
-    orders are left out unless the list is of cancelled orders, so the figure is real business."""
+    """What the orders a list shows are worth, for one salesman or any other filter. The list
+    leaves cancelled orders out unless it is the list of cancelled orders."""
     query = _apply_order_filters(scoped_orders_query(db, current_user), status=status, **filters)
-    if status != OrderStatus.CANCELLED.value:
-        query = query.filter(Order.status != OrderStatus.CANCELLED)
-    base_sub, _tax_sub = _totals_subqueries(db)
-    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
-    value = (
-        query.outerjoin(base_sub, base_sub.c.order_id == Order.id)
-        .with_entities(func.coalesce(func.sum(total_expr), 0))
-        .scalar()
-    )
-    return round(float(value or 0), 2)
+    return metrics.orders_value(db, query)
 
 
 def get_orders_page(
@@ -567,14 +527,10 @@ def get_orders_page(
 
     total = query.count()
 
-    base_sub, tax_sub = _totals_subqueries(db)
-    # The delivery charge is GST-inclusive like the item lines, so it adds to the total as is.
-    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
-
+    totals_sub = metrics.order_total_subquery(db)
     rows = (
-        query.outerjoin(base_sub, base_sub.c.order_id == Order.id)
-        .outerjoin(tax_sub, tax_sub.c.order_id == Order.id)
-        .add_columns(total_expr.label("total_amount"))
+        query.outerjoin(totals_sub, totals_sub.c.order_id == Order.id)
+        .add_columns(metrics.order_total_expr(totals_sub).label("total_amount"))
         .order_by(Order.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -792,234 +748,19 @@ def export_orders_excel(
     output.seek(0)
     return output
 
-# The business runs on India time; weeks and months on the dashboard are counted in it.
-IST = timedelta(hours=5, minutes=30)
-
-
-def _ist_date(value) -> date | None:
-    if value is None:
-        return None
-    if value.tzinfo is not None:
-        value = value.replace(tzinfo=None) - value.utcoffset()  # to naive UTC
-    return (value + IST).date()
-
-
-def get_dashboard_money(db: Session, today: date | None = None, weeks: int = 12):
-    """Is money coming in? Invoiced sales (by invoice date: invoices are issued at dispatch),
-    money collected (by collection date) and orders placed (cancelled ones excluded), per week
-    for the last `weeks` weeks, Monday to Sunday, and month to date against the same days of the
-    previous month. Small tables, so the bucketing happens here rather than in SQL."""
-    today = today or _ist_date(datetime.utcnow().replace(tzinfo=None))
-    this_week = today - timedelta(days=today.weekday())
-    first_week = this_week - timedelta(weeks=weeks - 1)
-    since = datetime.combine(first_week - timedelta(days=40), datetime.min.time())  # covers last month too
-
-    invoices = [
-        (_ist_date(when), float(amount or 0))
-        for when, amount in db.query(Invoice.invoice_date, Invoice.grand_total).filter(Invoice.invoice_date >= since)
-    ]
-    collections = [
-        (_ist_date(collected or created), float(amount or 0))
-        for collected, created, amount in db.query(Account.collection_date, Account.created_at, Account.amount)
-        .filter(func.coalesce(Account.collection_date, Account.created_at) >= since)
-    ]
-    placed = [
-        (_ist_date(when), 1.0)
-        for (when,) in db.query(Order.created_at).filter(
-            Order.created_at >= since,
-            Order.from_entity_type == "WAREHOUSE",
-            Order.to_entity_type == "RETAILER",
-            Order.status != OrderStatus.CANCELLED,
-        )
-    ]
-    series = {"sales": invoices, "collected": collections, "orders": placed}
-
-    week_rows = []
-    for i in range(weeks):
-        start = first_week + timedelta(weeks=i)
-        end = start + timedelta(days=7)
-        row = {"week_start": start.isoformat()}
-        for key, values in series.items():
-            row[key] = round(sum(v for d, v in values if d and start <= d < end), 2)
-        week_rows.append(row)
-
-    month_start = today.replace(day=1)
-    prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
-    # The same span of last month: the 1st up to today's day number (or that month's last day).
-    prev_month_end = min(prev_month_start + timedelta(days=today.day), month_start)
-
-    def window(start, end):
-        return {key: round(sum(v for d, v in values if d and start <= d < end), 2) for key, values in series.items()}
-
-    return {
-        "weeks": week_rows,
-        "month_to_date": window(month_start, today + timedelta(days=1)),
-        "previous_month_to_date": window(prev_month_start, prev_month_end),
-        "today": today.isoformat(),
-    }
-
-
-def get_stock_value(db: Session, lowest: int = 5):
-    """What the stock on hand cost us (units x distributor landing price), and the SKUs with the
-    fewest units left across all warehouses."""
-    rows = (
-        db.query(SKU.id, SKU.name, SKU.code, SKU.distributor_landing_price, func.coalesce(func.sum(Inventory.total_quantity), 0))
-        .outerjoin(Inventory, Inventory.sku_id == SKU.id)
-        .group_by(SKU.id, SKU.name, SKU.code, SKU.distributor_landing_price)
-        .all()
-    )
-    priced = [r for r in rows if r[3] is not None]
-    value = round(sum(float(r[3]) * float(r[4] or 0) for r in priced), 2) if priced else None
-    lowest_rows = sorted(rows, key=lambda r: (float(r[4] or 0), r[1] or ""))[:lowest]
-    return {
-        "inventory_value": value,
-        "unpriced_skus": len(rows) - len(priced),
-        "lowest": [
-            {"sku_id": r[0], "name": r[1], "code": r[2], "units": float(r[4] or 0)}
-            for r in lowest_rows
-        ],
-    }
-
-
 def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | None = None):
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-
-    def _apply_date(q):
-        if from_dt:
-            q = q.filter(Order.created_at >= from_dt)
-        if to_dt:
-            q = q.filter(Order.created_at < to_dt)
-        return q
-
-    base_outgoing = db.query(Order).filter(
-        Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER"
-    )
-    orders_count = _apply_date(base_outgoing).count()
-
-    payment_rows = _apply_date(
-        db.query(Order.payment_status, func.count(Order.id))
-        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-    ).group_by(Order.payment_status).all()
-    payment_status = {row[0].value if hasattr(row[0], "value") else row[0]: row[1] for row in payment_rows}
-
-    base_sub, tax_sub = _totals_subqueries(db)
-    # The delivery charge is GST-inclusive like the item lines, so it adds to the total as is.
-    total_expr = func.coalesce(base_sub.c.base_total, 0) + func.coalesce(Order.delivery_charge, 0)
-
-    revenue_q = (
-        db.query(func.coalesce(func.sum(total_expr), 0))
-        .select_from(Order)
-        .outerjoin(base_sub, base_sub.c.order_id == Order.id)
-        .outerjoin(tax_sub, tax_sub.c.order_id == Order.id)
-        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-    )
-    if from_dt:
-        revenue_q = revenue_q.filter(Order.created_at >= from_dt)
-    if to_dt:
-        revenue_q = revenue_q.filter(Order.created_at < to_dt)
-    outgoing_total = round(float(revenue_q.scalar() or 0), 2)
-
-    outstanding_q = (
-        db.query(func.coalesce(func.sum(total_expr), 0))
-        .select_from(Order)
-        .outerjoin(base_sub, base_sub.c.order_id == Order.id)
-        .outerjoin(tax_sub, tax_sub.c.order_id == Order.id)
-        .filter(
-            Order.from_entity_type == "WAREHOUSE",
-            Order.to_entity_type == "RETAILER",
-            Order.payment_status != PaymentStatus.PAID,
-        )
-    )
-    if from_dt:
-        outstanding_q = outstanding_q.filter(Order.created_at >= from_dt)
-    if to_dt:
-        outstanding_q = outstanding_q.filter(Order.created_at < to_dt)
-    outstanding_total = round(float(outstanding_q.scalar() or 0), 2)
-
-    # Timeline: use date range if given, else last 30 days
-    timeline_since = from_dt if from_dt else (datetime.utcnow() - timedelta(days=30))
-    timeline_q = (
-        db.query(func.date(Order.created_at), func.count(Order.id))
-        .filter(
-            Order.created_at >= timeline_since,
-            Order.from_entity_type == "WAREHOUSE",
-            Order.to_entity_type == "RETAILER",
-        )
-    )
-    if to_dt:
-        timeline_q = timeline_q.filter(Order.created_at < to_dt)
-    timeline_rows = (
-        timeline_q
-        .group_by(func.date(Order.created_at))
-        .order_by(func.date(Order.created_at))
-        .all()
-    )
-    orders_over_time = [
-        {"label": day.strftime("%d %b"), "orders": count}
-        for day, count in timeline_rows
-        if day
-    ]
-
-    warehouse_map = {w.id: w.name for w in db.query(Warehouse).all()}
-    sales_q = (
-        db.query(Order.from_entity_id, func.count(Order.id))
-        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
-    )
-    if from_dt:
-        sales_q = sales_q.filter(Order.created_at >= from_dt)
-    if to_dt:
-        sales_q = sales_q.filter(Order.created_at < to_dt)
-    sales_rows = sales_q.group_by(Order.from_entity_id).all()
-    sales_by_warehouse = [
-        {
-            "warehouse_id": warehouse_id,
-            "warehouse_name": warehouse_map.get(warehouse_id) or f"WH-{warehouse_id}",
-            "orders": count,
-        }
-        for warehouse_id, count in sales_rows
-    ]
-
-    # Inventory stats are current state — not date-filtered
-    inventory_rows = (
-        db.query(Inventory.warehouse_id, func.sum(Inventory.total_quantity))
-        .group_by(Inventory.warehouse_id)
-        .all()
-    )
-    inventory_by_warehouse = [
-        {
-            "warehouse_id": warehouse_id,
-            "warehouse_name": warehouse_map.get(warehouse_id) or f"WH-{warehouse_id}",
-            "units": float(units or 0),
-        }
-        for warehouse_id, units in inventory_rows
-    ]
-    quantities = [row[1] for row in inventory_rows]
-    max_qty = max(quantities) if quantities else 0
-    low_stock_threshold = max(10, int(max_qty * 0.1)) if max_qty else 10
-    low_stock_count = (
-        db.query(func.count(Inventory.sku_id))
-        .filter(Inventory.total_quantity <= low_stock_threshold)
-        .scalar()
-        or 0
-    )
-
+    """The office dashboard. Every figure comes from app/services/metrics.py. Flows (sales,
+    collected, orders) follow the period; what shops owe and stock are as of now."""
+    orders = metrics.in_period(metrics.live_orders(db), Order.created_at, from_date, to_date)
     return {
         "orders": {
-            "total": orders_count,
-            "revenue": float(outgoing_total),
-            "outstanding": float(outstanding_total),
-            "payment_status": payment_status,
+            "total": orders.count(),
+            "revenue": metrics.orders_value(db, orders),
+            "outstanding": metrics.outstanding_summary(db)["total_outstanding"],
+            "payment_status": metrics.orders_by_payment_status(db, from_date, to_date),
         },
-        "inventory": {
-            **get_stock_value(db),
-            "low_stock_count": low_stock_count,
-            "low_stock_threshold": low_stock_threshold,
-            "by_warehouse": inventory_by_warehouse,
-        },
-        "orders_over_time": orders_over_time,
-        "money": get_dashboard_money(db),
-        "sales_by_warehouse": sales_by_warehouse,
+        "inventory": metrics.stock_value(db),
+        "money": metrics.money_series(db, from_date, to_date),
     }
 
 def list_retailers(db: Session):
@@ -1099,16 +840,11 @@ def list_warehouses(db: Session):
 def get_order_status_summary(
     db: Session, from_date: str | None = None, to_date: str | None = None, salesman_id: int | None = None
 ):
-    from_dt = _parse_date(from_date, False)
-    to_dt = _parse_date(to_date, True)
-    q = (
+    q = metrics.in_period(
         db.query(Order.status, func.count(Order.id))
-        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER")
+        .filter(Order.from_entity_type == "WAREHOUSE", Order.to_entity_type == "RETAILER"),
+        Order.created_at, from_date, to_date,
     )
-    if from_dt:
-        q = q.filter(Order.created_at >= from_dt)
-    if to_dt:
-        q = q.filter(Order.created_at < to_dt)
     if salesman_id:
         q = q.filter(Order.salesman_id == salesman_id)
     rows = q.group_by(Order.status).all()
@@ -1116,6 +852,8 @@ def get_order_status_summary(
     for status, count in rows:
         key = status.value if hasattr(status, "value") else status
         summary[key] = count
+    # Every order that is not cancelled: what the "All" list shows.
+    summary["ALL"] = sum(count for key, count in summary.items() if key != OrderStatus.CANCELLED.value)
     # Delivered but not fully paid: the collections queue on the orders screen.
     summary["PAYMENT_DUE"] = (
         q.filter(Order.status == OrderStatus.DELIVERED, Order.payment_status.in_(_PAYMENT_DUE_STATUSES))

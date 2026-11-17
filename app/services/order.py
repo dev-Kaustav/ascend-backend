@@ -1026,6 +1026,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "delivery_driver_name": driver.name if driver else None,
         "total_amount": totals["grand_total"],
         "pending_amount": calculate_order_outstanding(order),
+        "amount_paid": _round_money(sum((_round_money(p.amount) for p in order.payments), _round_money(0))),
         "taxable_value": totals["taxable_value"],
         "gst_amount": totals["gst_amount"],
         "subtotal": totals["subtotal"],
