@@ -28,6 +28,7 @@ from app.models import (
     CompanyProfile,
     PaymentQRImage,
     Category,
+    Account,
 )
 from app.models.payment_qr_image import digest_image
 from app.schemas.admin import (
@@ -766,6 +767,95 @@ def export_orders_excel(
     output.seek(0)
     return output
 
+# The business runs on India time; weeks and months on the dashboard are counted in it.
+IST = timedelta(hours=5, minutes=30)
+
+
+def _ist_date(value) -> date | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.replace(tzinfo=None) - value.utcoffset()  # to naive UTC
+    return (value + IST).date()
+
+
+def get_dashboard_money(db: Session, today: date | None = None, weeks: int = 12):
+    """Is money coming in? Invoiced sales (by invoice date: invoices are issued at dispatch),
+    money collected (by collection date) and orders placed (cancelled ones excluded), per week
+    for the last `weeks` weeks, Monday to Sunday, and month to date against the same days of the
+    previous month. Small tables, so the bucketing happens here rather than in SQL."""
+    today = today or _ist_date(datetime.utcnow().replace(tzinfo=None))
+    this_week = today - timedelta(days=today.weekday())
+    first_week = this_week - timedelta(weeks=weeks - 1)
+    since = datetime.combine(first_week - timedelta(days=40), datetime.min.time())  # covers last month too
+
+    invoices = [
+        (_ist_date(when), float(amount or 0))
+        for when, amount in db.query(Invoice.invoice_date, Invoice.grand_total).filter(Invoice.invoice_date >= since)
+    ]
+    collections = [
+        (_ist_date(collected or created), float(amount or 0))
+        for collected, created, amount in db.query(Account.collection_date, Account.created_at, Account.amount)
+        .filter(func.coalesce(Account.collection_date, Account.created_at) >= since)
+    ]
+    placed = [
+        (_ist_date(when), 1.0)
+        for (when,) in db.query(Order.created_at).filter(
+            Order.created_at >= since,
+            Order.from_entity_type == "WAREHOUSE",
+            Order.to_entity_type == "RETAILER",
+            Order.status != OrderStatus.CANCELLED,
+        )
+    ]
+    series = {"sales": invoices, "collected": collections, "orders": placed}
+
+    week_rows = []
+    for i in range(weeks):
+        start = first_week + timedelta(weeks=i)
+        end = start + timedelta(days=7)
+        row = {"week_start": start.isoformat()}
+        for key, values in series.items():
+            row[key] = round(sum(v for d, v in values if d and start <= d < end), 2)
+        week_rows.append(row)
+
+    month_start = today.replace(day=1)
+    prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
+    # The same span of last month: the 1st up to today's day number (or that month's last day).
+    prev_month_end = min(prev_month_start + timedelta(days=today.day), month_start)
+
+    def window(start, end):
+        return {key: round(sum(v for d, v in values if d and start <= d < end), 2) for key, values in series.items()}
+
+    return {
+        "weeks": week_rows,
+        "month_to_date": window(month_start, today + timedelta(days=1)),
+        "previous_month_to_date": window(prev_month_start, prev_month_end),
+        "today": today.isoformat(),
+    }
+
+
+def get_stock_value(db: Session, lowest: int = 5):
+    """What the stock on hand cost us (units x distributor landing price), and the SKUs with the
+    fewest units left across all warehouses."""
+    rows = (
+        db.query(SKU.id, SKU.name, SKU.code, SKU.distributor_landing_price, func.coalesce(func.sum(Inventory.total_quantity), 0))
+        .outerjoin(Inventory, Inventory.sku_id == SKU.id)
+        .group_by(SKU.id, SKU.name, SKU.code, SKU.distributor_landing_price)
+        .all()
+    )
+    priced = [r for r in rows if r[3] is not None]
+    value = round(sum(float(r[3]) * float(r[4] or 0) for r in priced), 2) if priced else None
+    lowest_rows = sorted(rows, key=lambda r: (float(r[4] or 0), r[1] or ""))[:lowest]
+    return {
+        "inventory_value": value,
+        "unpriced_skus": len(rows) - len(priced),
+        "lowest": [
+            {"sku_id": r[0], "name": r[1], "code": r[2], "units": float(r[4] or 0)}
+            for r in lowest_rows
+        ],
+    }
+
+
 def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | None = None):
     from_dt = _parse_date(from_date, False)
     to_dt = _parse_date(to_date, True)
@@ -897,12 +987,13 @@ def get_admin_summary(db: Session, from_date: str | None = None, to_date: str | 
             "payment_status": payment_status,
         },
         "inventory": {
-            "inventory_value": None,
+            **get_stock_value(db),
             "low_stock_count": low_stock_count,
             "low_stock_threshold": low_stock_threshold,
             "by_warehouse": inventory_by_warehouse,
         },
         "orders_over_time": orders_over_time,
+        "money": get_dashboard_money(db),
         "sales_by_warehouse": sales_by_warehouse,
     }
 
