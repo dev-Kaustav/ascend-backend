@@ -121,10 +121,16 @@ def test_the_whole_store_journey(client, db, monkeypatch):
     db.commit()
     ready_to_ship = client.patch(
         f"/orders/{order_id}/status",
-        json={"status": "READY_TO_SHIP", "delivery_driver_id": driver.id},
+        json={"status": "READY_TO_SHIP"},
         headers=auth_headers(admin),
     )
     assert ready_to_ship.status_code == 200, ready_to_ship.text
+    assigned = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "DRIVER_ASSIGNED", "delivery_driver_id": driver.id},
+        headers=auth_headers(admin),
+    )
+    assert assigned.status_code == 200, assigned.text
     dispatched = client.patch(
         f"/orders/{order_id}/status", json={"status": "OUT_FOR_DELIVERY"}, headers=auth_headers(admin)
     )

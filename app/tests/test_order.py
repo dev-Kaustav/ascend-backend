@@ -63,9 +63,15 @@ def test_fefo_allocation(db):
     assert refreshed_late.remaining_quantity == 10
     assert refreshed_late.reserved_quantity == 1
 
-    result.delivery_driver_id = 1
+    driver = Employee(name="FEFO Driver", email="fefo-driver@ascend.com", role=EmployeeRole.DRIVER)
+    db.add(driver)
+    db.commit()
+    result.delivery_driver_id = driver.id
     db.commit()
     update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"), user)
+    update_order_status(
+        db, result.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=result.delivery_driver_id), user
+    )
     update_order_status(db, result.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
     assert updated_inventory.total_quantity == 9
     assert updated_inventory.reserved_quantity == 0

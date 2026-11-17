@@ -20,7 +20,7 @@ from app.services.order import (
 from app.services import inventory as inventory_service
 from app.tests.reserve_helpers import create_and_reserve
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
-from app.models import SKU, SKUBatch, Inventory, OrderItemBatch, User, Brand, Retailer, Warehouse
+from app.models import SKU, SKUBatch, Inventory, OrderItemBatch, User, Brand, Retailer, Warehouse, Employee
 from app.models.enums import EmployeeRole
 
 
@@ -213,9 +213,11 @@ def test_dispatch_refuses_a_batch_that_expired_after_reservation(db, as_of, monk
     result = create_and_reserve(db, _order(retailer, warehouse, sku, 5), user)
     assert result is not None
 
-    result.delivery_driver_id = 1
+    driver = Employee(name="Expiry Driver", email="expiry-driver@ascend.com", role=EmployeeRole.DRIVER)
+    db.add(driver)
     db.commit()
     update_order_status(db, result.id, StatusUpdate(status="READY_TO_SHIP"), user)
+    update_order_status(db, result.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), user)
 
     # Move the seam forward past the batch's expiry, then dispatch.
     monkeypatch.setattr(

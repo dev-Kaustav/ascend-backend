@@ -53,6 +53,9 @@ def _dispatch_order(db, warehouse, retailer, skus, driver, user, quantity=2, dis
     order.delivery_driver_id = driver.id
     db.commit()
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), dispatcher or user)
+    update_order_status(
+        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=order.delivery_driver_id), dispatcher or user
+    )
     update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), dispatcher or user)
     db.refresh(order)
     return order
@@ -222,6 +225,9 @@ def test_online_orders_use_their_own_on_series(db):
     online.delivery_driver_id = driver.id
     db.commit()
     update_order_status(db, online.id, StatusUpdate(status="READY_TO_SHIP"), user)
+    update_order_status(
+        db, online.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=online.delivery_driver_id), user
+    )
     update_order_status(db, online.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
     db.refresh(online)
 

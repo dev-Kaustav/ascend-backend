@@ -68,6 +68,7 @@ class EmployeeRole(str, Enum):
 class OrderStatus(str, Enum):
     PENDING = "PENDING"
     READY_TO_SHIP = "READY_TO_SHIP"
+    DRIVER_ASSIGNED = "DRIVER_ASSIGNED"
     OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY"
     DELIVERED = "DELIVERED"
     RETURNED = "RETURNED"

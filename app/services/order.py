@@ -65,14 +65,20 @@ class OrderNotFoundError(ValueError):
 # it. RETURNED is reserved for a future partial-cancellation feature (D1) and deliberately
 # appears on neither side of any row here.
 _ALLOWED_TRANSITIONS: dict[tuple[OrderStatus, OrderStatus], frozenset[str]] = {
+    # READY_TO_SHIP is the warehouse accepting the order; the rider is chosen afterwards.
     (OrderStatus.PENDING, OrderStatus.READY_TO_SHIP): frozenset({"WAREHOUSE_MANAGER"}),
-    (OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY): frozenset({"DRIVER"}),
+    (OrderStatus.READY_TO_SHIP, OrderStatus.DRIVER_ASSIGNED): frozenset({"WAREHOUSE_MANAGER"}),
+    # The assigned rider accepting is also the pickup: goods leave and the invoice is issued.
+    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY): frozenset({"DRIVER"}),
+    # Rider declines, or the warehouse takes the order back to reassign it.
+    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.READY_TO_SHIP): frozenset({"DRIVER", "WAREHOUSE_MANAGER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED): frozenset({"DRIVER"}),
     (OrderStatus.PENDING, OrderStatus.CANCELLED): frozenset({"ADMIN", "RETAILER"}),
     # Retailer included per amended D2 (2026-08-16): a retailer may cancel until the goods
-    # leave — READY_TO_SHIP is picked/assigned but not yet dispatched, so this is still
-    # self-serve. Matches components/orders/RetailerOrders.jsx's existing CANCELLABLE set.
+    # leave — READY_TO_SHIP and DRIVER_ASSIGNED are accepted/assigned but not yet dispatched,
+    # so this is still self-serve. Matches components/orders/RetailerOrders.jsx's existing CANCELLABLE set.
     (OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
+    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED): frozenset({"DRIVER", "ADMIN"}),
     (OrderStatus.DELIVERED, OrderStatus.CANCELLED): frozenset({"ADMIN"}),
 }
@@ -111,7 +117,7 @@ def _check_role_for_transition(current_user, next_status: OrderStatus, order: "O
         if not retailer_id or retailer_id != order.to_entity_id:
             raise StatusTransitionForbiddenError("Order does not belong to your account")
         # Fall through to the table check below — a retailer is only listed on
-        # (PENDING, CANCELLED) and (READY_TO_SHIP, CANCELLED); any other transition is
+        # (PENDING|READY_TO_SHIP|DRIVER_ASSIGNED, CANCELLED); any other transition is
         # denied by the membership check.
     if role == "DRIVER":
         if (
@@ -574,10 +580,26 @@ def record_salesman_cash(db: Session, order_id: int, collection, current_user):
     return payment
 
 
-def _build_trail_description(order: Order, next_status: OrderStatus) -> str:
+def _build_trail_description(
+    order: Order,
+    next_status: OrderStatus,
+    previous_status: OrderStatus | None = None,
+    actor_role: str | None = None,
+    driver_name: str | None = None,
+    reason: str | None = None,
+) -> str:
     if next_status == OrderStatus.READY_TO_SHIP:
-        return "Marked ready to ship"
+        if previous_status == OrderStatus.DRIVER_ASSIGNED:
+            text = "Declined by rider" if actor_role == "DRIVER" else "Rider unassigned"
+            if driver_name:
+                text = f"{text} ({driver_name})"
+            return f"{text} — {reason}" if reason else text
+        return "Order accepted"
+    if next_status == OrderStatus.DRIVER_ASSIGNED:
+        return f"Rider assigned: {driver_name}" if driver_name else "Rider assigned"
     if next_status == OrderStatus.OUT_FOR_DELIVERY:
+        if previous_status == OrderStatus.DRIVER_ASSIGNED:
+            return "Accepted and picked up by rider"
         return "Out for delivery"
     if next_status == OrderStatus.DELIVERED:
         return "Delivered"
@@ -763,7 +785,11 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
 
     _check_role_for_transition(current_user, next_status, order)
 
-    if status.delivery_driver_id:
+    # The rider is chosen only on the assign step; on every other transition the field is ignored,
+    # so a stale value from a form cannot quietly swap riders.
+    if next_status == OrderStatus.DRIVER_ASSIGNED:
+        if not status.delivery_driver_id:
+            raise ValueError("Select a rider before assigning")
         driver = db.query(Employee).filter(Employee.id == status.delivery_driver_id).first()
         if not driver or get_role_value(driver) != "DRIVER":
             raise ValueError("Invalid delivery driver")
@@ -789,16 +815,23 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
         order.description = status.description
 
     previous_status = order.status
+    # Named in the trail: the rider just assigned, or the one being taken off the order.
+    trail_driver = None
+    if order.delivery_driver_id and next_status in {OrderStatus.DRIVER_ASSIGNED, OrderStatus.READY_TO_SHIP}:
+        trail_driver = db.query(Employee).filter(Employee.id == order.delivery_driver_id).first()
 
     if next_status == OrderStatus.READY_TO_SHIP:
-        if not order.delivery_driver_id:
-            raise ValueError("Delivery driver is required before marking ready to ship")
         order.status = OrderStatus.READY_TO_SHIP
-        # Stock is blocked at this admin step, not at order creation. A shortage refuses the
-        # transition with the SKU, warehouse and allocatable count, so the admin can fix it
-        # (receive stock, edit or cancel the order) before it ships.
-        if _is_outgoing_order(order):
+        if previous_status == OrderStatus.DRIVER_ASSIGNED:
+            # Declined or unassigned: the stock stays reserved for the next rider.
+            order.delivery_driver_id = None
+        elif _is_outgoing_order(order):
+            # Stock is blocked at this accept step, not at order creation. A shortage refuses the
+            # transition with the SKU, warehouse and allocatable count, so the admin can fix it
+            # (receive stock, edit or cancel the order) before it ships.
             _reserve_inventory_for_order(db, order)
+    elif next_status == OrderStatus.DRIVER_ASSIGNED:
+        order.status = OrderStatus.DRIVER_ASSIGNED
     elif next_status == OrderStatus.OUT_FOR_DELIVERY:
         order.status = OrderStatus.OUT_FOR_DELIVERY
         _dispatch_reserved_inventory(db, order)
@@ -830,12 +863,19 @@ def update_order_status(db: Session, order_id: int, status: StatusUpdate, curren
             _record_payment(db, order, status.payment_mode or "CASH", status.payment_amount)
     elif next_status == OrderStatus.CANCELLED:
         order.status = next_status
-        if previous_status in {OrderStatus.PENDING, OrderStatus.READY_TO_SHIP}:
+        if previous_status in {OrderStatus.PENDING, OrderStatus.READY_TO_SHIP, OrderStatus.DRIVER_ASSIGNED}:
             _release_reserved_inventory(db, order)
         else:
             _restore_dispatched_inventory(db, order)
 
-    trail_description = status.description or _build_trail_description(order, next_status)
+    trail_description = status.description or _build_trail_description(
+        order,
+        next_status,
+        previous_status=previous_status,
+        actor_role=get_role_value(current_user),
+        driver_name=trail_driver.name if trail_driver else None,
+        reason=(status.reason or "").strip() or None,
+    )
     db.add(OrderTrail(
         order_id=order.id,
         order_status=next_status,
