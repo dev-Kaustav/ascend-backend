@@ -208,6 +208,13 @@ def list_payments(db: Session, limit: int = 50, offset: int = 0, from_date: str 
         .offset(offset)
         .all()
     )
+    shop_names = dict(
+        db.query(Order.id, Retailer.name)
+        .join(Retailer, Retailer.id == Order.to_entity_id)
+        .filter(Order.id.in_({p.order_id for p in items}))
+    ) if items else {}
+    for payment in items:
+        setattr(payment, "retailer_name", shop_names.get(payment.order_id))
 
     # Per India day; without a start date, the last 30 days.
     daily_from = from_date or (metrics.today_ist() - timedelta(days=29)).isoformat()

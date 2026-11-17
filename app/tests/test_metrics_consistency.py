@@ -91,6 +91,7 @@ def test_a_cancelled_order_counts_in_no_total(db):
     payments, count, total_amount, _ = list_payments(db)
     assert count == 2 and total_amount == collected
     assert float(sum(p.amount for p in payments)) == collected
+    assert {p.retailer_name for p in payments} == {"Gupta Stores"}
 
     daily = get_daily_sales_summary(db)
     assert daily["total_orders"] == 4

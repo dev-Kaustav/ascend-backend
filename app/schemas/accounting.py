@@ -35,6 +35,7 @@ class PaymentResponse(BaseModel):
     cheque_number: Optional[str] = None
     cheque_name: Optional[str] = None
     created_at: Optional[datetime] = None
+    retailer_name: Optional[str] = None
 
 class PaymentDailyTotal(BaseModel):
     date: str
