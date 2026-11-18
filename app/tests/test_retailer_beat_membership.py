@@ -1,5 +1,7 @@
 from app.core.security import create_access_token, get_password_hash
-from app.models import User, Retailer, Beat
+import pytest
+
+from app.models import User, Retailer, Beat, Warehouse
 from app.models.enums import EmployeeRole
 
 
@@ -188,3 +190,58 @@ def test_list_retailers_returns_beat_id_for_every_retailer(client, db):
     by_id = {row["id"]: row for row in response.json()}
     assert by_id[assigned.id]["beat_id"] == beat.id
     assert by_id[unassigned.id]["beat_id"] is None
+
+
+def test_edit_beat_preserves_membership_and_allows_clearing_warehouse(client, db):
+    headers = _auth_header_for(db, EmployeeRole.ADMIN)
+    beat = _make_beat(db, "Old beat")
+    retailer = _make_retailer(db)
+    warehouse = Warehouse(name="City")
+    retailer.beat_id = beat.id
+    db.add(warehouse)
+    db.commit()
+
+    response = client.patch(f"/admin/beats/{beat.id}", headers=headers,
+                            json={"name": "  New beat  ", "warehouse_id": warehouse.id})
+    assert response.status_code == 200
+    assert response.json()["name"] == "New beat"
+    assert response.json()["warehouse_id"] == warehouse.id
+    cleared = client.patch(f"/admin/beats/{beat.id}", headers=headers, json={"warehouse_id": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["name"] == "New beat"
+    assert cleared.json()["warehouse_id"] is None
+    db.refresh(retailer)
+    assert retailer.beat_id == beat.id
+    lookups = client.get("/admin/lookups", headers=headers).json()
+    assert next(row for row in lookups["beats"] if row["id"] == beat.id)["name"] == "New beat"
+
+
+@pytest.mark.parametrize("payload,status", [
+    ({"name": "   "}, 422),
+    ({"name": None}, 422),
+    ({"name": "Existing"}, 400),
+    ({"name": "Changed", "warehouse_id": 999999}, 400),
+])
+def test_edit_beat_rejects_invalid_details_without_changes(client, db, payload, status):
+    headers = _auth_header_for(db, EmployeeRole.ADMIN)
+    beat = _make_beat(db, "Original")
+    _make_beat(db, "Existing")
+    response = client.patch(f"/admin/beats/{beat.id}", headers=headers, json=payload)
+    assert response.status_code == status
+    db.refresh(beat)
+    assert beat.name == "Original"
+    assert beat.warehouse_id is None
+
+
+@pytest.mark.parametrize("role", [EmployeeRole.ACCOUNTANT, EmployeeRole.WAREHOUSE_MANAGER, EmployeeRole.SALESMAN, EmployeeRole.DRIVER])
+def test_edit_beat_is_admin_only(client, db, role):
+    headers = _auth_header_for(db, role)
+    beat = _make_beat(db, "Admin beat")
+    assert client.patch(f"/admin/beats/{beat.id}", headers=headers, json={"name": "Changed"}).status_code == 403
+    db.refresh(beat)
+    assert beat.name == "Admin beat"
+
+
+def test_edit_unknown_beat_returns_404(client, db):
+    headers = _auth_header_for(db, EmployeeRole.ADMIN)
+    assert client.patch("/admin/beats/999999", headers=headers, json={"name": "Missing"}).status_code == 404

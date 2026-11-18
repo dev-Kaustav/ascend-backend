@@ -59,6 +59,7 @@ from app.schemas.admin import (
     RetailerUpdate,
     RetailerResponse,
     RetailerBeatUpdate,
+    BeatUpdate,
     SKUCreate,
     SKUUpdate,
     SKUResponse,
@@ -489,6 +490,22 @@ def create_beat_endpoint(payload: dict, db: Session = Depends(get_db), current_u
         raise HTTPException(status_code=400, detail="Beat already exists")
     beat = Beat(name=name, warehouse_id=payload.get("warehouse_id") or None)
     db.add(beat)
+    db.commit()
+    db.refresh(beat)
+    return beat
+
+@router.patch("/beats/{beat_id}")
+def update_beat_endpoint(beat_id: int, payload: BeatUpdate, db: Session = Depends(get_db), current_user = Depends(require_admin)):
+    beat = db.get(Beat, beat_id)
+    if beat is None:
+        raise HTTPException(status_code=404, detail="Beat not found")
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes and db.query(Beat).filter(Beat.name == changes["name"], Beat.id != beat_id).first():
+        raise HTTPException(status_code=400, detail="Beat already exists")
+    if changes.get("warehouse_id") is not None and db.get(Warehouse, changes["warehouse_id"]) is None:
+        raise HTTPException(status_code=400, detail="Warehouse not found")
+    for field, value in changes.items():
+        setattr(beat, field, value)
     db.commit()
     db.refresh(beat)
     return beat

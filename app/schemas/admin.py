@@ -228,6 +228,18 @@ class RetailerBeatUpdate(BaseModel):
     # remove the retailer from its beat. This endpoint does one thing.
     beat_id: Optional[int] = None
 
+
+class BeatUpdate(BaseModel):
+    name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value):
+        if value is None or not value.strip():
+            raise ValueError("Beat name is required")
+        return value.strip()
+
 def _all_optional(model: type[BaseModel], name: str) -> type[BaseModel]:
     """A partial-update twin of `model`: an omitted key means "leave alone". Subclassing keeps the
     validators, and Pydantic skips validating defaults, so an omitted field never trips one."""
