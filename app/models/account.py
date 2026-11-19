@@ -19,5 +19,5 @@ class Account(Base):
     cheque_name = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    order = relationship("Order", back_populates="payments")
+    order = relationship("Order", back_populates="payments", lazy="selectin")
     collected_by = relationship("Employee", foreign_keys=[collected_by_id])

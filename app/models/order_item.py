@@ -14,5 +14,5 @@ class OrderItem(Base):
     discount_amount = Column(Numeric(12, 2), default=0, nullable=False)
 
     order = relationship("Order", back_populates="items")
-    taxes = relationship("OrderItemTax", back_populates="order_item", cascade="all, delete-orphan")
+    taxes = relationship("OrderItemTax", back_populates="order_item", cascade="all, delete-orphan", lazy="selectin")
     order_item_batches = relationship("OrderItemBatch", back_populates="order_item", cascade="all, delete-orphan")

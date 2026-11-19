@@ -254,6 +254,15 @@ def naive_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
 
 
+def names_by_id(db: Session, model, ids) -> dict:
+    """{id: name} for every id in one query, for loops that label rows with a retailer or employee
+    name. Querying per row made these endpoints cost one round trip per order."""
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    return dict(db.query(model.id, model.name).filter(model.id.in_(ids)).all())
+
+
 def credit_notes_total(order) -> float:
     return sum(
         calculate_credit_note_totals(cn)["grand_total"] for cn in order.credit_notes if getattr(cn, "applies_to_outstanding", True)
@@ -269,6 +278,8 @@ def outstanding_summary(
     """Total outstanding, with its age and who owes it. Every screen that shows what shops owe
     reads this."""
     orders = _balance_orders_query(db, warehouse_id, from_date, to_date).all()
+    salesman_names = names_by_id(db, Employee, (o.salesman_id for o in orders))
+    retailer_names = names_by_id(db, Retailer, (o.to_entity_id for o in orders))
 
     reconciliation = {"order_value": 0, "collected": 0, "credits": 0, "excess_payments": 0}
     stages = {
@@ -322,10 +333,9 @@ def outstanding_summary(
 
         sid = order.salesman_id or 0
         if sid not in by_salesman:
-            salesman = db.query(Employee).filter(Employee.id == sid).first() if sid else None
             by_salesman[sid] = {
                 "salesman_id": sid,
-                "salesman_name": salesman.name if salesman else "Unassigned",
+                "salesman_name": salesman_names.get(sid, "Unassigned"),
                 "total_credit": 0,
                 "recovered": 0,
                 "pending": 0,
@@ -338,10 +348,9 @@ def outstanding_summary(
 
         rid = order.to_entity_id
         if rid not in by_retailer:
-            retailer = db.query(Retailer).filter(Retailer.id == rid).first()
             by_retailer[rid] = {
                 "retailer_id": rid,
-                "retailer_name": retailer.name if retailer else "Unknown",
+                "retailer_name": retailer_names.get(rid, "Unknown"),
                 "total_credit": 0,
                 "recovered": 0,
                 "pending": 0,

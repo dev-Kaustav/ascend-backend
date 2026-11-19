@@ -282,20 +282,20 @@ def get_collections(
 
     total = query.count()
     items = query.order_by(Account.created_at.desc()).limit(limit).offset(offset).all()
+    retailer_names = metrics.names_by_id(db, Retailer, (p.order.to_entity_id for p in items if p.order))
+    collector_names = metrics.names_by_id(db, Employee, (p.collected_by_id for p in items))
 
     result = []
     for payment in items:
         order = payment.order
-        retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first() if order else None
-        collector = db.query(Employee).filter(Employee.id == payment.collected_by_id).first() if payment.collected_by_id else None
         result.append({
             "id": payment.id,
             "order_id": payment.order_id,
             "invoice_number": order.invoice_number if order else None,
-            "retailer_name": retailer.name if retailer else None,
+            "retailer_name": retailer_names.get(order.to_entity_id) if order else None,
             "amount": round(payment.amount, 2),
             "payment_mode": payment.payment_mode.value if hasattr(payment.payment_mode, "value") and payment.payment_mode else None,
-            "collected_by_name": collector.name if collector else None,
+            "collected_by_name": collector_names.get(payment.collected_by_id),
             "collected_by_id": payment.collected_by_id,
             "collection_date": payment.collection_date,
             "cheque_number": payment.cheque_number,
@@ -323,6 +323,7 @@ def get_collection_summary(
         query = query.filter(Order.from_entity_id == warehouse_id)
 
     payments = query.all()
+    retailer_names = metrics.names_by_id(db, Retailer, (p.order.to_entity_id for p in payments if p.order))
 
     by_collector = defaultdict(lambda: {
         "collector_id": None,
@@ -350,11 +351,10 @@ def get_collection_summary(
         c["by_mode"][mode] += p.amount
 
         order = p.order
-        retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first() if order else None
         c["payments"].append({
             "id": p.id,
             "invoice_number": order.invoice_number if order else None,
-            "retailer_name": retailer.name if retailer else None,
+            "retailer_name": retailer_names.get(order.to_entity_id) if order else None,
             "amount": round(p.amount, 2),
             "payment_mode": mode,
             "time": p.created_at,

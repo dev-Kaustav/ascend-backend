@@ -39,7 +39,6 @@ from app.models import (
 from app.models.enums import EmployeeRole, OrderStatus, TransactionType
 from app.schemas.order import OrderCreate, OrderItemCreate, StatusUpdate
 from app.services.order import (
-    OrderScopeError,
     StatusTransitionForbiddenError,
     _ALLOWED_TRANSITIONS,
     _check_role_for_transition,
@@ -59,17 +58,14 @@ from app.services.order import (
 # — an annotated assignment parses as ast.AnnAssign instead and would silently escape it.
 _MATRIX = {
     (OrderStatus.PENDING, OrderStatus.READY_TO_SHIP): frozenset({"WAREHOUSE_MANAGER"}),
-    # Rider flow (2026-11-17): READY_TO_SHIP is the warehouse accepting the order; the rider is
-    # assigned as its own step and must accept (= pick up) before the order goes out.
-    (OrderStatus.READY_TO_SHIP, OrderStatus.DRIVER_ASSIGNED): frozenset({"WAREHOUSE_MANAGER"}),
-    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY): frozenset({"DRIVER"}),
-    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.READY_TO_SHIP): frozenset({"DRIVER", "WAREHOUSE_MANAGER"}),
+    # Rider flow (2026-11-19): the office picks the rider and sends the order out in one step.
+    # The rider-accept/pickup step (DRIVER_ASSIGNED) is gone; the status is history only.
+    (OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY): frozenset({"WAREHOUSE_MANAGER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED): frozenset({"DRIVER"}),
     (OrderStatus.PENDING, OrderStatus.CANCELLED): frozenset({"ADMIN", "RETAILER"}),
     # Amended D2 (2026-08-16): a retailer may cancel until the goods leave — READY_TO_SHIP
     # is picked/assigned but not yet dispatched, so this is still self-serve.
     (OrderStatus.READY_TO_SHIP, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
-    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.CANCELLED): frozenset({"ADMIN", "WAREHOUSE_MANAGER", "RETAILER"}),
     (OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED): frozenset({"DRIVER", "ADMIN"}),
 }
 
@@ -104,12 +100,12 @@ def test_every_ordered_pair_is_classified(frm, to):
     assert is_allowed == expected_allowed
 
 
-def test_exactly_nine_pairs_are_allowed():
+def test_exactly_six_pairs_are_allowed():
     """A future row addition to _MATRIX or _ALLOWED_TRANSITIONS must be a deliberate act,
     caught by this count changing."""
     allowed_count = sum(1 for frm, to in _ALL_PAIRS if to in allowed_next_statuses(frm))
-    assert allowed_count == 9
-    assert len(_MATRIX) == 9
+    assert allowed_count == 6
+    assert len(_MATRIX) == 6
 
 
 _PAIR_ROLE_CASES = [
@@ -186,21 +182,21 @@ def test_unconfirmed_linked_retailer_cannot_transition_the_linked_shops_order():
 
 def test_driver_cannot_transition_unassigned_order():
     order = SimpleNamespace(
-        status=OrderStatus.DRIVER_ASSIGNED,
+        status=OrderStatus.OUT_FOR_DELIVERY,
         to_entity_id=7,
         delivery_driver_id=1,
     )
     other_driver = SimpleNamespace(role=EmployeeRole.DRIVER.value, employee_id=2)
 
     with pytest.raises(StatusTransitionForbiddenError):
-        _check_role_for_transition(other_driver, OrderStatus.OUT_FOR_DELIVERY, order)
+        _check_role_for_transition(other_driver, OrderStatus.DELIVERED, order)
 
 
 _FORBIDDEN_SAMPLE = [
     (OrderStatus.PENDING, OrderStatus.DELIVERED),
     (OrderStatus.READY_TO_SHIP, OrderStatus.DELIVERED),
-    (OrderStatus.READY_TO_SHIP, OrderStatus.OUT_FOR_DELIVERY),
-    (OrderStatus.DRIVER_ASSIGNED, OrderStatus.DELIVERED),
+    (OrderStatus.PENDING, OrderStatus.OUT_FOR_DELIVERY),
+    (OrderStatus.READY_TO_SHIP, OrderStatus.DRIVER_ASSIGNED),
     (OrderStatus.DELIVERED, OrderStatus.READY_TO_SHIP),
     (OrderStatus.DELIVERED, OrderStatus.CANCELLED),
     (OrderStatus.CANCELLED, OrderStatus.PENDING),
@@ -268,10 +264,7 @@ def _seed_dispatchable_order(db, quantity=5):
 
 def _dispatch(db, order, driver, current_user):
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user)
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), current_user
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), current_user)
     db.refresh(order)
 
 
@@ -299,11 +292,8 @@ def _walk_order_to(db, order, driver, target, wm, drv_user):
     if target == OrderStatus.READY_TO_SHIP:
         return
     update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), current_user=wm
+        db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), current_user=wm
     )
-    if target == OrderStatus.DRIVER_ASSIGNED:
-        return
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
     if target == OrderStatus.OUT_FOR_DELIVERY:
         return
     if target == OrderStatus.DELIVERED:
@@ -325,15 +315,13 @@ def test_happy_path_walks_the_full_chain_with_the_right_role_at_each_step(db):
     assert order.delivery_driver_id is None
 
     update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), current_user=wm
+        db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), current_user=wm
     )
     db.refresh(order)
-    assert order.status == OrderStatus.DRIVER_ASSIGNED
+    assert order.status == OrderStatus.OUT_FOR_DELIVERY
+    assert order.delivery_driver_id == driver.id
 
     drv_user = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
-    db.refresh(order)
-    assert order.status == OrderStatus.OUT_FOR_DELIVERY
 
     update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), current_user=drv_user)
     db.refresh(order)
@@ -341,19 +329,15 @@ def test_happy_path_walks_the_full_chain_with_the_right_role_at_each_step(db):
 
     trails = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).order_by(OrderTrail.id).all()
     # "Order created" (by _seed_user) + one trail row per transition below.
-    assert len(trails) == 5
-    assert [t.changed_by_id for t in trails[1:]] == [wm.id, wm.id, drv_user.id, drv_user.id]
-    assert [t.description for t in trails[1:4]] == [
-        "Order accepted",
-        f"Rider assigned: {driver.name}",
-        "Accepted and picked up by rider",
-    ]
+    assert len(trails) == 4
+    assert [t.changed_by_id for t in trails[1:]] == [wm.id, wm.id, drv_user.id]
+    assert [t.description for t in trails[1:3]] == ["Order accepted", f"Sent out with {driver.name}"]
 
 
 _CANCEL_CASES = [
     (OrderStatus.PENDING, EmployeeRole.RETAILER),
     (OrderStatus.READY_TO_SHIP, EmployeeRole.WAREHOUSE_MANAGER),
-    (OrderStatus.DRIVER_ASSIGNED, EmployeeRole.RETAILER),
+    (OrderStatus.READY_TO_SHIP, EmployeeRole.RETAILER),
     (OrderStatus.OUT_FOR_DELIVERY, EmployeeRole.DRIVER),
 ]
 
@@ -469,9 +453,10 @@ def test_the_reserved_status_is_unreachable(db, current_status, request_kind):
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
     drv_user = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
 
-    if current_status == OrderStatus.RETURNED:
-        # Nothing can drive here — RETURNED is unreachable by construction (D1). Plant it.
-        order.status = OrderStatus.RETURNED
+    if current_status in (OrderStatus.RETURNED, OrderStatus.DRIVER_ASSIGNED):
+        # Nothing can drive here: RETURNED is unreachable by construction (D1), and DRIVER_ASSIGNED
+        # has been history only since the pickup step was removed. Plant it.
+        order.status = current_status
         db.commit()
     else:
         _walk_order_to(db, order, driver, current_status, wm, drv_user)
@@ -537,7 +522,7 @@ def test_cancelling_after_dispatch_leaves_the_issued_invoice_untouched(db):
 
 def test_delivered_orders_always_have_a_delivery_driver(db):
     """The invariant holds structurally because DELIVERED is reachable only via
-    DRIVER_ASSIGNED, which refuses without a driver — this asserts the
+    OUT_FOR_DELIVERY, whose one way in refuses without a rider — this asserts the
     invariant rather than adding a redundant second guard (see 03-01-PLAN.md judgement
     call 2)."""
     for _ in range(2):
@@ -551,7 +536,7 @@ def test_delivered_orders_always_have_a_delivery_driver(db):
 
 
 # ---------------------------------------------------------------------------------------
-# Rider flow: accept without a rider, assign, rider accept / decline
+# Rider flow: accept without a rider, then the office sends the order out with one
 # ---------------------------------------------------------------------------------------
 
 
@@ -578,18 +563,19 @@ def test_accepting_needs_no_rider_and_reserves_stock(db):
     assert _stock(db, order).reserved_quantity == 5
 
 
-def test_assigning_without_a_rider_is_refused(db):
+def test_sending_out_without_a_rider_is_refused(db):
     order, _driver, _seed_user = _seed_dispatchable_order(db)
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user=wm)
 
     with pytest.raises(ValueError, match="Select a rider"):
-        update_order_status(db, order.id, StatusUpdate(status="DRIVER_ASSIGNED"), current_user=wm)
+        update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=wm)
     db.refresh(order)
     assert order.status == OrderStatus.READY_TO_SHIP
+    assert order.invoice is None
 
 
-def test_rider_id_is_ignored_outside_the_assign_step(db):
+def test_rider_id_is_ignored_outside_the_send_out_step(db):
     order, driver, _seed_user = _seed_dispatchable_order(db)
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
 
@@ -600,85 +586,47 @@ def test_rider_id_is_ignored_outside_the_assign_step(db):
     assert order.delivery_driver_id is None
 
 
-def test_only_the_assigned_rider_can_accept(db):
-    order, driver, _seed_user = _seed_dispatchable_order(db)
-    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
-    _walk_order_to(db, order, driver, OrderStatus.DRIVER_ASSIGNED, wm, None)
-
-    other = Employee(name="Other Rider", email=f"other-rider-{next(_seed_counter)}@ascend.com", role=EmployeeRole.DRIVER)
-    db.add(other)
-    db.commit()
-    other_user = _user(db, EmployeeRole.DRIVER, employee_id=other.id)
-
-    with pytest.raises(OrderScopeError):
-        update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=other_user)
-    db.refresh(order)
-    assert order.status == OrderStatus.DRIVER_ASSIGNED
-
-
-def test_rider_accept_dispatches_stock_and_issues_the_invoice(db):
+def test_sending_out_sets_the_rider_dispatches_stock_and_issues_the_invoice(db):
     order, driver, _seed_user = _seed_dispatchable_order(db, quantity=5)
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
-    drv_user = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
-    _walk_order_to(db, order, driver, OrderStatus.DRIVER_ASSIGNED, wm, drv_user)
+    _walk_order_to(db, order, driver, OrderStatus.READY_TO_SHIP, wm, None)
     assert order.invoice is None
 
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
+    update_order_status(
+        db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), current_user=wm
+    )
     db.refresh(order)
 
     assert order.status == OrderStatus.OUT_FOR_DELIVERY
+    assert order.delivery_driver_id == driver.id
     assert order.invoice is not None
     inventory = _stock(db, order)
     assert inventory.total_quantity == 45
     assert inventory.reserved_quantity == 0
-
-
-def test_rider_decline_clears_the_rider_and_keeps_the_reservation(db):
-    order, driver, _seed_user = _seed_dispatchable_order(db, quantity=5)
-    wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
-    drv_user = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
-    _walk_order_to(db, order, driver, OrderStatus.DRIVER_ASSIGNED, wm, drv_user)
-
-    update_order_status(
-        db, order.id, StatusUpdate(status="READY_TO_SHIP", reason="Bike broke down"), current_user=drv_user
-    )
-    db.refresh(order)
-
-    assert order.status == OrderStatus.READY_TO_SHIP
-    assert order.delivery_driver_id is None
-    # Reserved once at accept; the decline must not reserve a second time.
-    assert _stock(db, order).reserved_quantity == 5
     last = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).order_by(OrderTrail.id.desc()).first()
-    assert last.description == f"Declined by rider ({driver.name}) — Bike broke down"
-    assert last.changed_by_id == drv_user.id
-    # The reason is trail-only; it must not overwrite the order's own note.
-    assert order.description is None
-
-    # And the order can be handed to the next rider and go out normally.
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), current_user=wm
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=drv_user)
-    db.refresh(order)
-    assert order.status == OrderStatus.OUT_FOR_DELIVERY
-    assert _stock(db, order).total_quantity == 45
+    assert last.description == f"Sent out with {driver.name}"
 
 
-def test_warehouse_unassign_is_recorded_as_unassign(db):
+def test_a_rider_cannot_send_an_order_out(db):
     order, driver, _seed_user = _seed_dispatchable_order(db)
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
-    _walk_order_to(db, order, driver, OrderStatus.DRIVER_ASSIGNED, wm, None)
+    _walk_order_to(db, order, driver, OrderStatus.READY_TO_SHIP, wm, None)
+    order.delivery_driver_id = driver.id
+    db.commit()
+    drv_user = _user(db, EmployeeRole.DRIVER, employee_id=driver.id)
 
-    update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user=wm)
+    with pytest.raises(StatusTransitionForbiddenError):
+        update_order_status(
+            db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), current_user=drv_user
+        )
+    db.refresh(order)
+    assert order.status == OrderStatus.READY_TO_SHIP
 
-    last = db.query(OrderTrail).filter(OrderTrail.order_id == order.id).order_by(OrderTrail.id.desc()).first()
-    assert last.description == f"Rider unassigned ({driver.name})"
 
-
-def test_cancelling_an_assigned_order_releases_the_reservation(db):
+def test_cancelling_an_accepted_order_releases_the_reservation(db):
     order, driver, _seed_user = _seed_dispatchable_order(db, quantity=5)
     wm = _user(db, EmployeeRole.WAREHOUSE_MANAGER)
-    _walk_order_to(db, order, driver, OrderStatus.DRIVER_ASSIGNED, wm, None)
+    _walk_order_to(db, order, driver, OrderStatus.READY_TO_SHIP, wm, None)
     assert _stock(db, order).reserved_quantity == 5
 
     update_order_status(db, order.id, StatusUpdate(status="CANCELLED"), current_user=wm)

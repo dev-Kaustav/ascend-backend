@@ -34,7 +34,7 @@ class CreditNote(Base):
     note_date = Column(DateTime(timezone=True), nullable=True)
 
     order = relationship("Order", back_populates="credit_notes")
-    items = relationship("CreditNoteItem", back_populates="credit_note", cascade="all, delete-orphan")
+    items = relationship("CreditNoteItem", back_populates="credit_note", cascade="all, delete-orphan", lazy="selectin")
     # One-directional: no back_populates. Invoice must not gain a mutable collection —
     # appending here would be an ORM write path against an immutable object and would
     # trip the guard from plan 02-01 confusingly. A read-only reference is all INV-06

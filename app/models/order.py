@@ -63,11 +63,11 @@ class Order(Base):
     delivery_charge = Column(Numeric(12, 2), nullable=False, server_default="0", default=0)
     delivery_charge_gst_rate = Column(Numeric(5, 2), nullable=False, server_default="0", default=0)
 
-    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
-    credit_notes = relationship("CreditNote", back_populates="order", cascade="all, delete-orphan")
-    payments = relationship("Account", back_populates="order", cascade="all, delete-orphan")
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
+    credit_notes = relationship("CreditNote", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
+    payments = relationship("Account", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
     trails = relationship("OrderTrail", backref="order", cascade="all, delete-orphan", order_by="OrderTrail.created_at")
-    invoice = relationship("Invoice", back_populates="order", uselist=False)
+    invoice = relationship("Invoice", back_populates="order", uselist=False, lazy="selectin")
 
     @property
     def invoice_number(self):

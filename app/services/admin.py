@@ -4,7 +4,7 @@ import re
 from sqlalchemy import and_, func, or_
 from sqlalchemy import select as db_select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload, load_only, aliased
+from sqlalchemy.orm import Session, load_only, aliased
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -20,7 +20,6 @@ from app.models import (
     InventoryTransaction,
     Order,
     OrderItem,
-    CreditNote,
     Invoice,
     User,
     Group,
@@ -541,23 +540,10 @@ def get_orders_page(
         setattr(order, "total_amount", round(float(total_amount or 0), 2))
         items.append(order)
 
-    order_ids = [order.id for order in items]
-    if order_ids:
-        detailed_orders = (
-            db.query(Order)
-            .options(
-                selectinload(Order.items).selectinload(OrderItem.taxes),
-                selectinload(Order.payments),
-                selectinload(Order.credit_notes).selectinload(CreditNote.items),
-            )
-            .filter(Order.id.in_(order_ids))
-            .all()
-        )
-        detailed_map = {order.id: order for order in detailed_orders}
-        for order in items:
-            detailed = detailed_map.get(order.id)
-            pending_amount = calculate_order_outstanding(detailed) if detailed else 0
-            setattr(order, "pending_amount", float(pending_amount))
+    # The page query already batch-loaded items, taxes, payments and credit notes (the
+    # relationships are lazy="selectin"), so the outstanding figure needs no second query.
+    for order in items:
+        setattr(order, "pending_amount", float(calculate_order_outstanding(order)))
     warehouse_ids = {order.from_entity_id for order in items}
     retailer_ids = {order.to_entity_id for order in items}
     salesman_ids = {order.salesman_id for order in items if order.salesman_id}

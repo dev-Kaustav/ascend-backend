@@ -179,10 +179,7 @@ def _ready_to_ship(db, order, driver, current_user):
 
 
 def _dispatch(db, order, current_user):
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=order.delivery_driver_id), current_user
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=order.delivery_driver_id), current_user)
     db.refresh(order)
 
 

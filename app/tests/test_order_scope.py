@@ -179,11 +179,11 @@ def test_privileged_roles_can_read_orders(db):
 def test_driver_cannot_transition_another_drivers_order_directly(db):
     data = _scope_fixture(db)
     order = data["other_order"]
-    order.status = OrderStatus.DRIVER_ASSIGNED
+    order.status = OrderStatus.OUT_FOR_DELIVERY
     db.commit()
 
     with pytest.raises(OrderScopeError):
-        update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), data["driver"])
+        update_order_status(db, order.id, StatusUpdate(status="DELIVERED"), data["driver"])
 
 
 def test_update_status_missing_order_returns_404(client, db):
@@ -265,7 +265,7 @@ def test_update_status_invalid_driver_returns_400(client, db):
 
     response = client.patch(
         f"/orders/{data['assigned_order'].id}/status",
-        json={"status": "DRIVER_ASSIGNED", "delivery_driver_id": 999999},
+        json={"status": "OUT_FOR_DELIVERY", "delivery_driver_id": 999999},
         headers=_headers(data["admin"]),
     )
 

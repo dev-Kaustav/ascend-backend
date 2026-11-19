@@ -2,6 +2,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.core.errors import install_error_handlers
 from app.routers import auth, admin, orders, accounting, bill_labels, imports, dashboard_api, outlet_finder, retailer_requests, landing_leads, store
@@ -28,6 +29,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
+# Outermost: list and lookup JSON (every retailer, every SKU) shrinks to roughly a sixth.
+# Responses under 1 KB are left alone, where compressing costs more than it saves.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(admin.router, prefix="/admin", tags=["admin"])

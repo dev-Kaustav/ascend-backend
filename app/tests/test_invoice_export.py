@@ -102,10 +102,7 @@ def _dispatched_order(
         # still runs inventory dispatch but does not re-issue or overwrite this date —
         # an issued Invoice is immutable, so the date could not be set after the fact.
         issue_invoice_for_order(db, order, invoice_date=invoice_date)
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), user
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), user)
     db.refresh(order)
     return order, order.invoice
 

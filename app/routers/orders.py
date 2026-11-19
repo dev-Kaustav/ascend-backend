@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.services.order import create_outgoing_order, order_form_lookups, update_order_status, get_order_detail, get_order_invoice_view, get_order_for_invoice_pdf, InsufficientStockError, RetailerAccessError, StatusTransitionForbiddenError, OrderNotFoundError, OrderScopeError
+from app.services.order import create_outgoing_order, order_form_lookups, update_order_status, get_order_detail, get_order_invoice_view, get_order_for_invoice_pdf, get_order_summary, InsufficientStockError, RetailerAccessError, StatusTransitionForbiddenError, OrderNotFoundError, OrderScopeError
 from app.services.invoice_pdf import regenerate_invoice_pdf
+from app.services.order_summary_pdf import order_summary_pdf
 from app.services.admin import get_orders_page
 from app.schemas.order import OrderCreate, OrderResponse, StatusUpdate, InvoiceView, OrderListPage
 from app.core.deps import require_roles
@@ -152,6 +153,19 @@ def get_invoice_view(order_id: int, db: Session = Depends(get_db), current_user 
         raise HTTPException(status_code=404, detail=str(e))
     except OrderScopeError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+@router.get("/{order_id}/summary.pdf")
+def get_order_summary_pdf(order_id: int, db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER", "SALESMAN"))):
+    # The pre-dispatch stand-in for the invoice PDF: same roles and scope, live order figures.
+    try:
+        order = get_order_summary(db, order_id, current_user)
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except OrderScopeError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    output, filename = order_summary_pdf(db, order)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(output, media_type="application/pdf", headers=headers)
 
 @router.get("/{order_id}/invoice.pdf")
 def get_invoice_pdf(order_id: int, db: Session = Depends(get_db), current_user = Depends(require_roles("ADMIN", "ACCOUNTANT", "WAREHOUSE_MANAGER", "SALESMAN"))):

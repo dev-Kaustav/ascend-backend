@@ -15,15 +15,15 @@ def test_order_detail_returns_the_trail_in_order_with_names(client, db):
     order, driver, _seed_user = _seed_dispatchable_order(db)
     wm = make_user(db, EmployeeRole.WAREHOUSE_MANAGER)
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), wm)
-    update_order_status(db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=driver.id), wm)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=driver.id), wm)
 
     admin = make_user(db, EmployeeRole.ADMIN)
     response = client.get(f"/orders/{order.id}", headers=auth_headers(admin))
 
     assert response.status_code == 200, response.text
     trails = response.json()["trails"]
-    assert [t["order_status"] for t in trails] == ["PENDING", "READY_TO_SHIP", "DRIVER_ASSIGNED"]
-    assert [t["description"] for t in trails] == ["Order created", "Order accepted", f"Rider assigned: {driver.name}"]
+    assert [t["order_status"] for t in trails] == ["PENDING", "READY_TO_SHIP", "OUT_FOR_DELIVERY"]
+    assert [t["description"] for t in trails] == ["Order created", "Order accepted", f"Sent out with {driver.name}"]
     assert all(t["created_at"] for t in trails)
 
 

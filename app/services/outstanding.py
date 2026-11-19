@@ -23,6 +23,8 @@ def get_outstanding_orders(
     total = query.count()
     orders = query.order_by(Order.created_at.desc()).limit(limit).offset(offset).all()
 
+    retailer_names = metrics.names_by_id(db, Retailer, (o.to_entity_id for o in orders))
+    salesman_names = metrics.names_by_id(db, Employee, (o.salesman_id for o in orders))
     items = []
     for order in orders:
         outstanding = calculate_order_outstanding(order)
@@ -31,8 +33,6 @@ def get_outstanding_orders(
         totals = calculate_order_totals(order)
         payments_total = sum(p.amount for p in order.payments)
         credit_total = metrics.credit_notes_total(order)
-        retailer = db.query(Retailer).filter(Retailer.id == order.to_entity_id).first()
-        salesman = db.query(Employee).filter(Employee.id == order.salesman_id).first() if order.salesman_id else None
 
         payment_modes = {}
         for p in order.payments:
@@ -42,9 +42,9 @@ def get_outstanding_orders(
         items.append({
             "order_id": order.id,
             "invoice_number": order.invoice_number,
-            "retailer_name": retailer.name if retailer else None,
+            "retailer_name": retailer_names.get(order.to_entity_id),
             "retailer_id": order.to_entity_id,
-            "salesman_name": salesman.name if salesman else None,
+            "salesman_name": salesman_names.get(order.salesman_id),
             "salesman_id": order.salesman_id,
             "order_date": order.created_at,
             "grand_total": totals["grand_total"],

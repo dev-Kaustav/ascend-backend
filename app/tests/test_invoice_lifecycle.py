@@ -56,10 +56,7 @@ def _dispatch(db, order, driver, current_user):
     order.delivery_driver_id = driver.id
     db.commit()
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user)
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=order.delivery_driver_id), current_user
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=order.delivery_driver_id), current_user)
     db.refresh(order)
 
 

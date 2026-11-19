@@ -74,10 +74,7 @@ def _seed(db, retailer_lat=None, retailer_lng=None):
     db.commit()
 
     update_order_status(db, order.id, StatusUpdate(status="READY_TO_SHIP"), current_user=admin)
-    update_order_status(
-        db, order.id, StatusUpdate(status="DRIVER_ASSIGNED", delivery_driver_id=order.delivery_driver_id), current_user=admin
-    )
-    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY"), current_user=driver_user)
+    update_order_status(db, order.id, StatusUpdate(status="OUT_FOR_DELIVERY", delivery_driver_id=order.delivery_driver_id), current_user=admin)
     db.refresh(order)
     return order, retailer, driver_user
 
