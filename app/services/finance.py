@@ -55,6 +55,22 @@ def calculate_order_item_totals(item) -> dict:
     }
 
 
+def pack_line(item, units_per_pack) -> dict:
+    """An order line read as whole packs: how many, and the price of one after its discount, so
+    pack_count x pack_price == line_total. Both None when the SKU has no pack, the quantity is not
+    whole packs, or the price does not divide to the paisa; the line then reads in pieces."""
+    none = {"pack_count": None, "pack_price": None}
+    quantity = _as_decimal(item.quantity)
+    if not units_per_pack or quantity <= ZERO or quantity % units_per_pack:
+        return none
+    pack_count = int(quantity / units_per_pack)
+    line_total = calculate_order_item_totals(item)["line_total"]
+    pack_price = _round_money(line_total / pack_count)
+    if pack_price * pack_count != line_total:
+        return none
+    return {"pack_count": pack_count, "pack_price": pack_price}
+
+
 def compute_delivery_charge(cart_value, min_order_value, percent) -> Decimal:
     """The GST-inclusive delivery charge for a cart (D-04, STORE-11): `percent` of the cart value,
     rounded half-up to 2 dp, when the cart is strictly below a positive minimum; otherwise 0.
@@ -85,10 +101,15 @@ def delivery_charge_totals(order) -> dict:
 def calculate_order_totals(order: Order) -> dict:
     taxable_value = ZERO
     gst_amount = ZERO
+    # The bill as the shop reads it: MRP value of the lines, less their discounts.
+    mrp_total = ZERO
+    discount_total = ZERO
     for item in order.items:
         item_totals = calculate_order_item_totals(item)
         taxable_value += item_totals["taxable_value"]
         gst_amount += item_totals["gst_amount"]
+        mrp_total += _as_decimal(item.quantity) * _as_decimal(item.unit_price)
+        discount_total += _as_decimal(item.discount_amount)
     delivery = delivery_charge_totals(order)
     taxable_value += delivery["taxable_value"]
     gst_amount += delivery["gst_amount"]
@@ -101,6 +122,8 @@ def calculate_order_totals(order: Order) -> dict:
         "gst_amount": gst_amount,
         "subtotal": subtotal,
         "grand_total": grand_total,
+        "mrp_total": _round_money(mrp_total),
+        "discount_total": _round_money(discount_total),
     }
 
 

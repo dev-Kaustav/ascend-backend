@@ -379,7 +379,7 @@ def test_serialized_shape_is_stable(db):
         "retailer_name", "retailer_address_line1", "retailer_city", "retailer_state",
         "retailer_pincode", "retailer_gst_number", "salesman_name", "salesman_phone",
         "delivery_driver_name", "total_amount", "pending_amount", "amount_paid", "taxable_value",
-        "gst_amount", "subtotal", "grand_total", "payments", "credit_notes", "trails",
+        "gst_amount", "subtotal", "grand_total", "mrp_total", "discount_total", "payments", "credit_notes", "trails",
         "created_at",
         # 08-09: ship-to snapshot, all None for an order that carries none.
         "delivery_address_id", "ship_to_label", "ship_to_line1", "ship_to_line2",

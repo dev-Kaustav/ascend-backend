@@ -58,6 +58,10 @@ class OrderItemResponse(BaseModel):
     # The SKU's pack, so an app can show "3 ladi" for 36 pieces.
     pack_type: Optional[str] = None
     units_per_pack: Optional[int] = None
+    # finance.pack_line: whole packs and the price of one after discount; None when the line
+    # does not read as whole packs.
+    pack_count: Optional[int] = None
+    pack_price: Optional[float] = None
     quantity: float
     unit_price: float
     discount_amount: float
@@ -136,6 +140,8 @@ class OrderResponse(BaseModel):
     gst_amount: Optional[float] = None
     subtotal: Optional[float] = None
     grand_total: Optional[float] = None
+    mrp_total: Optional[float] = None
+    discount_total: Optional[float] = None
     # 08-11: the server-computed storefront delivery charge, already inside grand_total (0 for
     # salesman/admin orders).
     delivery_charge: Optional[float] = None

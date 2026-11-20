@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from app.core.errors import install_error_handlers
-from app.routers import auth, admin, orders, accounting, bill_labels, imports, dashboard_api, outlet_finder, retailer_requests, landing_leads, store
+from app.routers import auth, admin, orders, accounting, bill_labels, imports, dashboard_api, outlet_finder, retailer_requests, retailers, landing_leads, store
 
 app = FastAPI(title="Ascend Foods Backend")
 
@@ -44,6 +44,7 @@ app.include_router(imports.router, prefix="/imports", tags=["imports"])
 app.include_router(dashboard_api.router, prefix="/dashboard", tags=["dashboard"])
 app.include_router(outlet_finder.router, prefix="/outlet-finder", tags=["outlet-finder"])
 app.include_router(retailer_requests.router, prefix="/retailer-requests", tags=["retailer-requests"])
+app.include_router(retailers.router, prefix="/retailers", tags=["retailers"])
 app.include_router(landing_leads.public_router, tags=["landing-leads"])
 app.include_router(landing_leads.router, prefix="/landing-leads", tags=["landing-leads"])
 app.include_router(store.router, prefix="/store", tags=["store"])

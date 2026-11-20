@@ -446,11 +446,14 @@ def _apply_order_filters(
     has_invoice: bool | None = None,
     channel: str | None = None,
     salesman_id: int | None = None,
+    retailer_id: int | None = None,
 ):
     if channel in ("ONLINE", "OFFLINE"):
         query = query.filter(Order.channel == channel)
     if salesman_id:
         query = query.filter(Order.salesman_id == salesman_id)
+    if retailer_id:
+        query = query.filter(Order.to_entity_id == retailer_id)
     status_filter = None
     if status:
         try:
@@ -509,6 +512,7 @@ def get_orders_page(
     has_invoice: bool | None = None,
     channel: str | None = None,
     salesman_id: int | None = None,
+    retailer_id: int | None = None,
 ):
     query = scoped_orders_query(db, current_user)
     query = _apply_order_filters(
@@ -521,6 +525,7 @@ def get_orders_page(
         has_invoice=has_invoice,
         channel=channel,
         salesman_id=salesman_id,
+        retailer_id=retailer_id,
     )
 
     total = query.count()

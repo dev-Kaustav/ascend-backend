@@ -28,6 +28,7 @@ from app.services.finance import (
     calculate_order_outstanding,
     calculate_order_totals,
     delivery_charge_totals,
+    pack_line,
     _round_money,
 )
 from app.services.invoice import issue_invoice_for_order
@@ -906,6 +907,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
             "hsn_code": sku.hsn_code if sku else None,
             "pack_type": sku.pack_type if sku else None,
             "units_per_pack": sku.units_per_pack if sku else None,
+            **pack_line(item, sku.units_per_pack if sku else None),
             "quantity": _round_money(item.quantity),
             "unit_price": _round_money(item.unit_price),
             "discount_amount": _round_money(item.discount_amount),
@@ -1013,6 +1015,8 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "gst_amount": totals["gst_amount"],
         "subtotal": totals["subtotal"],
         "grand_total": totals["grand_total"],
+        "mrp_total": totals["mrp_total"],
+        "discount_total": totals["discount_total"],
         "delivery_charge": _round_money(order.delivery_charge),
         "payments": payments,
         "credit_notes": credit_notes,

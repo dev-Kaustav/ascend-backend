@@ -28,6 +28,7 @@ def list_orders(
     to_date: str | None = Query(None),
     channel: Literal["ONLINE", "OFFLINE"] | None = Query(None),
     search: str | None = Query(None, max_length=100),
+    retailer_id: int | None = Query(None, ge=1),
 ):
     try:
         items, total = get_orders_page(
@@ -40,6 +41,7 @@ def list_orders(
             to_date=to_date,
             channel=channel,
             search=search,
+            retailer_id=retailer_id,
         )
     except OrderScopeError as e:
         raise HTTPException(status_code=403, detail=str(e))

@@ -22,7 +22,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import SKU, Account, CreditNote, Employee, Inventory, InventoryTransaction, Invoice, Order, OrderItem, Retailer, SKUBatch, Warehouse
+from app.models import SKU, Account, Beat, CreditNote, Employee, Inventory, InventoryTransaction, Invoice, Order, OrderItem, Retailer, SKUBatch, Warehouse
 from app.models.enums import OrderStatus
 from app.services.finance import calculate_credit_note_totals, calculate_order_outstanding, calculate_order_totals
 
@@ -263,6 +263,17 @@ def names_by_id(db: Session, model, ids) -> dict:
     return dict(db.query(model.id, model.name).filter(model.id.in_(ids)).all())
 
 
+def aging_bucket(days: int) -> str:
+    """Which age band an unpaid balance falls in, by days since the order was placed."""
+    if days <= 7:
+        return "0_7"
+    if days <= 15:
+        return "7_15"
+    if days <= 30:
+        return "15_30"
+    return "30_plus"
+
+
 def credit_notes_total(order) -> float:
     return sum(
         calculate_credit_note_totals(cn)["grand_total"] for cn in order.credit_notes if getattr(cn, "applies_to_outstanding", True)
@@ -322,14 +333,7 @@ def outstanding_summary(
         total_credit_notes += credit_total
 
         days = (now - naive_utc(order.created_at)).days if order.created_at else 0
-        if days <= 7:
-            aging["0_7"] += outstanding
-        elif days <= 15:
-            aging["7_15"] += outstanding
-        elif days <= 30:
-            aging["15_30"] += outstanding
-        else:
-            aging["30_plus"] += outstanding
+        aging[aging_bucket(days)] += outstanding
 
         sid = order.salesman_id or 0
         if sid not in by_salesman:
@@ -374,6 +378,89 @@ def outstanding_summary(
         "by_salesman": sorted(by_salesman.values(), key=lambda x: x["pending"], reverse=True),
         "by_retailer": sorted(by_retailer.values(), key=lambda x: x["pending"], reverse=True),
     }
+
+
+def retailer_report(db: Session, retailer_id: int, today: date | None = None) -> dict:
+    """One shop: what it has ordered, paid and still owes, how old that debt is, and each unpaid
+    bill. Live orders only, like every other figure here; months are India months."""
+    orders = _balance_orders_query(db, retailer_id=retailer_id).all()
+    today = today or today_ist()
+    this_month = today.replace(day=1)
+    last_month = (this_month - timedelta(days=1)).replace(day=1)
+    now = datetime.utcnow()
+    ordered = collected_total = owed = this_month_value = last_month_value = 0.0
+    aging = {"0_7": 0.0, "7_15": 0.0, "15_30": 0.0, "30_plus": 0.0}
+    last_order_at = None
+    bills = []
+    for order in orders:
+        total = float(calculate_order_totals(order)["grand_total"])
+        ordered += total
+        collected_total += float(sum(p.amount for p in order.payments))
+        day = ist_date(order.created_at)
+        if day and day >= this_month:
+            this_month_value += total
+        elif day and day >= last_month:
+            last_month_value += total
+        if order.created_at and (last_order_at is None or naive_utc(order.created_at) > last_order_at):
+            last_order_at = naive_utc(order.created_at)
+        pending = float(calculate_order_outstanding(order))
+        if pending > 0:
+            days = (now - naive_utc(order.created_at)).days if order.created_at else 0
+            aging[aging_bucket(days)] += pending
+            owed += pending
+            bills.append({
+                "order_id": order.id,
+                "invoice_number": order.invoice_number,
+                "status": getattr(order.status, "value", order.status),
+                "created_at": order.created_at,
+                "days": days,
+                "total": round(total, 2),
+                "pending": round(pending, 2),
+            })
+    count = len(orders)
+    return {
+        "orders": count,
+        "ordered_value": round(ordered, 2),
+        "average_order": round(ordered / count, 2) if count else 0,
+        "collected": round(collected_total, 2),
+        "outstanding": round(owed, 2),
+        "this_month": round(this_month_value, 2),
+        "last_month": round(last_month_value, 2),
+        "last_order_at": last_order_at,
+        "aging": {key: round(value, 2) for key, value in aging.items()},
+        # Oldest first: the bill to chase is the one that has waited longest.
+        "unpaid_bills": sorted(bills, key=lambda bill: -bill["days"]),
+    }
+
+
+def outstanding_by_retailer(db: Session, retailer_ids: list[int] | None = None) -> dict[int, float]:
+    """What each shop owes, for shops that owe anything; `retailer_ids` narrows it to those shops.
+    The same balances outstanding_summary adds up, so it matches every other screen."""
+    query = _balance_orders_query(db)
+    if retailer_ids is not None:
+        query = query.filter(Order.to_entity_id.in_(retailer_ids))
+    owed = {}
+    for order in query.all():
+        outstanding = calculate_order_outstanding(order)
+        if outstanding > 0:
+            owed[order.to_entity_id] = owed.get(order.to_entity_id, 0) + outstanding
+    return {retailer_id: round(float(amount), 2) for retailer_id, amount in owed.items()}
+
+
+def beat_overview(db: Session) -> list[dict]:
+    """Each beat with how many shops are on it and what they owe, plus the shops on no beat (id
+    None)."""
+    owed_by_retailer = outstanding_by_retailer(db)
+    shops = db.query(Retailer.id, Retailer.beat_id).all()
+    rows = {beat.id: {"id": beat.id, "name": beat.name, "warehouse_id": beat.warehouse_id, "shops": 0, "outstanding": 0.0}
+            for beat in db.query(Beat).order_by(Beat.name).all()}
+    unassigned = {"id": None, "name": "No beat", "warehouse_id": None, "shops": 0, "outstanding": 0.0}
+    for retailer_id, beat_id in shops:
+        row = rows.get(beat_id, unassigned)
+        row["shops"] += 1
+        row["outstanding"] += owed_by_retailer.get(retailer_id, 0)
+    result = list(rows.values()) + ([unassigned] if unassigned["shops"] else [])
+    return [{**row, "outstanding": round(row["outstanding"], 2)} for row in result]
 
 
 def cancelled_money(db: Session) -> dict:

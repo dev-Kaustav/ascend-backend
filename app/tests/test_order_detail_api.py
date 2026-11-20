@@ -41,3 +41,20 @@ def test_order_detail_returns_the_beat_and_sku_codes(client, db):
 
     assert body["beat_name"] == "DLF Phase 1"
     assert body["items"][0]["sku_code"] == "PNT-CS-27g"
+
+
+def test_order_detail_returns_pack_lines_and_the_bill_totals(client, db):
+    # The order screens read lines as packs and the bill from these server figures; a field the
+    # response model does not declare is silently dropped, so this goes through the API.
+    order, _driver, _seed_user = _seed_dispatchable_order(db, quantity=10)
+    sku = db.query(SKU).filter(SKU.id == order.items[0].sku_id).one()
+    sku.pack_type, sku.units_per_pack = "ladi", 5
+    order.items[0].discount_amount = 50
+    db.commit()
+
+    admin = make_user(db, EmployeeRole.ADMIN)
+    body = client.get(f"/orders/{order.id}", headers=auth_headers(admin)).json()
+
+    line = body["items"][0]
+    assert (line["pack_count"], line["pack_price"], line["line_total"]) == (2, 475.0, 950.0)
+    assert (body["mrp_total"], body["discount_total"]) == (1000.0, 50.0)

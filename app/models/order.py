@@ -66,7 +66,7 @@ class Order(Base):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
     credit_notes = relationship("CreditNote", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
     payments = relationship("Account", back_populates="order", cascade="all, delete-orphan", lazy="selectin")
-    trails = relationship("OrderTrail", backref="order", cascade="all, delete-orphan", order_by="OrderTrail.created_at")
+    trails = relationship("OrderTrail", backref="order", cascade="all, delete-orphan", order_by="(OrderTrail.created_at, OrderTrail.id)")
     invoice = relationship("Invoice", back_populates="order", uselist=False, lazy="selectin")
 
     @property

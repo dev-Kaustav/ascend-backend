@@ -84,3 +84,26 @@ def test_order_totals_with_zero_tax_rows_does_not_raise(db):
     assert totals["grand_total"] == Decimal("100.00")
     for value in totals.values():
         assert isinstance(value, Decimal)
+
+
+def test_pack_line_reads_whole_packs_at_the_discounted_pack_price():
+    from types import SimpleNamespace
+    from app.services.finance import pack_line
+
+    item = SimpleNamespace(quantity=Decimal("36"), unit_price=Decimal("10"), discount_amount=Decimal("72"), taxes=[])
+    assert pack_line(item, 12) == {"pack_count": 3, "pack_price": Decimal("96.00")}
+    # Ten packs stay a plain 10, never 1E+1.
+    item = SimpleNamespace(quantity=Decimal("120"), unit_price=Decimal("10"), discount_amount=Decimal("0"), taxes=[])
+    assert pack_line(item, 12) == {"pack_count": 10, "pack_price": Decimal("120.00")}
+
+
+def test_pack_line_falls_back_to_pieces_when_packs_do_not_fit():
+    from types import SimpleNamespace
+    from app.services.finance import pack_line
+
+    none = {"pack_count": None, "pack_price": None}
+    loose = SimpleNamespace(quantity=Decimal("30"), unit_price=Decimal("10"), discount_amount=Decimal("0"), taxes=[])
+    assert pack_line(loose, None) == none
+    assert pack_line(loose, 12) == none  # 2.5 packs
+    uneven = SimpleNamespace(quantity=Decimal("36"), unit_price=Decimal("10"), discount_amount=Decimal("0.01"), taxes=[])
+    assert pack_line(uneven, 12) == none  # 359.99 / 3 does not divide to the paisa
